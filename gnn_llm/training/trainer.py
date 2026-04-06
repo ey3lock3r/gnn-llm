@@ -9,9 +9,10 @@ def run_training(model, loader, config):
     Works with any GigaModel (APTP, NoProp, future models).
     """
     ignore_checkpoint = config.get('ignore_checkpoint', False)
+    run_id = config.get('wandb_run_id', 'default_run')
     resume_step = 0
     if not ignore_checkpoint:
-        latest_cp = get_latest_checkpoint()
+        latest_cp = get_latest_checkpoint(run_id)
         if latest_cp:
             resume_step = model.load_checkpoint(latest_cp)
 
@@ -46,4 +47,4 @@ def run_training(model, loader, config):
             pbar.set_postfix({'step': global_step, 'loss': f'{loss_val:.4f}', 'lr': f'{curr_lr:.2e}'})
 
         if global_step > 0 and global_step % SAVE_INTERVAL == 0:
-            model.save_checkpoint(get_next_checkpoint_slot(global_step), global_step)
+            model.save_checkpoint(get_next_checkpoint_slot(global_step, run_id), global_step)
