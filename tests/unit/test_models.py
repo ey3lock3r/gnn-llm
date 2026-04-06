@@ -27,6 +27,23 @@ def test_noprop_build():
     model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
     assert model is not None
 
+def test_noprop_fourier():
+    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False, use_fourier=True)
+    x = make_batch()
+    y = torch.roll(x, -1, dims=1)
+    loss = model.train_step(x, y)
+    assert isinstance(loss, float)
+    assert loss < 100
+
+def test_noprop_stochastic():
+    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False, drop_prob=0.5)
+    model.train() # Force train mode for dropouts
+    x = make_batch()
+    y = torch.roll(x, -1, dims=1)
+    loss = model.train_step(x, y)
+    assert isinstance(loss, float)
+    assert loss < 100
+
 def test_noprop_train_step():
     model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
     x = make_batch()

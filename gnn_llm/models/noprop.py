@@ -17,11 +17,12 @@ class EntropyBalancedAttention(nn.Module):
         return torch.softmax(scores, dim=0)
 
 class NoPropBlock(nn.Module):
-    def __init__(self, d_model, device="cpu", use_fp16=True):
+    def __init__(self, d_model, device="cpu", use_fp16=True, use_fourier=False):
         super().__init__()
         self.d_model = d_model
         self.device = device
         self.use_fp16 = use_fp16
+        self.use_fourier = use_fourier
         
         self.W = nn.Linear(d_model * 2, d_model, bias=False, device=device)
         # Hyper-Stable v11.2: Hardened initialization and LayerNorm epsilon
@@ -42,17 +43,33 @@ class NoPropBlock(nn.Module):
         h = self.W(combined)
         h_norm = self.norm(h) # FP16 native (eps=1e-4 protects against underflow)
         
-        att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
-        gated_att = torch.diagonal(att).view(-1, 1, 1)
-        
-        # Stability Gain
-        z_next = z_prev + h * gated_att * 0.1
+        if getattr(self, 'use_fourier', False):
+            # v12.0 Experiment: F-NoProp Global Frequency Mixing
+            # Using norm="ortho" forces the magnitude variance to be strictly preserved.
+            # Convert to float32 strictly for the FFT to prevent precision crashes, then back.
+            orig_dtype = h_norm.dtype
+            h_float = h_norm.float()
+            fft_hidden = torch.fft.fft(h_float, dim=-1, norm="ortho")
+            fft_seq = torch.fft.fft(fft_hidden, dim=-2, norm="ortho")
+            h_mixed = fft_seq.real.to(orig_dtype)
+            
+            # Stability Gain
+            z_next = z_prev + h_mixed * 0.1
+        else:
+            # v11.3: Classical Entropy Balanced Attention [O(N^2)]
+            att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
+            gated_att = torch.diagonal(att).view(-1, 1, 1)
+            
+            # Stability Gain
+            z_next = z_prev + h * gated_att * 0.1
+            
         return z_next
 
 class NoPropModel(GigaModel):
-    def __init__(self, vocab_size, d_model, depth, device="cpu", use_fp16=True):
+    def __init__(self, vocab_size, d_model, depth, device="cpu", use_fp16=True, drop_prob=0.0, use_fourier=False):
         super().__init__(vocab_size, d_model, device)
         self.depth = depth
+        self.drop_prob = drop_prob
         self.use_fp16 = use_fp16
         
         if torch.cuda.is_available() and torch.cuda.device_count() > 1:
@@ -71,7 +88,7 @@ class NoPropModel(GigaModel):
         self.blocks = nn.ModuleList()
         for d in range(depth):
             block_device = self.device0 if d < depth // 2 else self.device1
-            self.blocks.append(NoPropBlock(d_model, device=block_device, use_fp16=use_fp16))
+            self.blocks.append(NoPropBlock(d_model, device=block_device, use_fp16=use_fp16, use_fourier=use_fourier))
             
         self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device1)
         
@@ -97,6 +114,10 @@ class NoPropModel(GigaModel):
         total_loss = 0
         
         for d in range(self.depth):
+            # v12.0 Experiment: Stochastic Layer-Wise Drop
+            if self.training and self.drop_prob > 0.0 and torch.rand(1).item() < self.drop_prob:
+                continue
+                
             block = self.blocks[d]
             target_device = next(block.parameters()).device
             
