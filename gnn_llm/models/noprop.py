@@ -10,11 +10,11 @@ class EntropyBalancedAttention(nn.Module):
         super().__init__()
         self.tau = tau
     def forward(self, h_i, h_j):
-        # Hyper-Stable v11.2: Compute in FP32 and clip scores to [-10, 10]
-        # This prevents the softmax from snapping to 0/1 and creating gradient spikes
-        scores = torch.matmul(h_i.float(), h_j.t().float()) / self.tau
+        # Hyper-Stable v11.3: Native FP16 with score clamp avoids saturation
+        # safely without the massive FP32 conversion overhead.
+        scores = torch.matmul(h_i, h_j.t()) / self.tau
         scores = torch.clamp(scores, min=-10.0, max=10.0)
-        return torch.softmax(scores, dim=0).to(h_i.dtype)
+        return torch.softmax(scores, dim=0)
 
 class NoPropBlock(nn.Module):
     def __init__(self, d_model, device="cpu", use_fp16=True):
@@ -42,7 +42,7 @@ class NoPropBlock(nn.Module):
             
         combined = torch.cat([x, z_prev], dim=-1)
         h = self.W(combined)
-        h_norm = self.norm(h.float()).to(h.dtype)
+        h_norm = self.norm(h) # FP16 native (eps=1e-4 protects against underflow)
         
         att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
         gated_att = torch.diagonal(att).view(-1, 1, 1)
@@ -60,9 +60,9 @@ class NoPropBlock(nn.Module):
         z_pred = self.forward(x, z_prev)
         loss = F.mse_loss(z_pred, z_target)
         loss.backward()
-        
-        # Hyper-Stable v11.2: Gradient Clipping at 1.0
-        torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+        # Hyper-Stable v11.3: Fast element-wise value clipping instead of 
+        # the slow global norm reduction.
+        torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
         
         self.optimizer.step()
             
