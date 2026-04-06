@@ -42,8 +42,8 @@ class APTPBlockV8(nn.Module):
         z = F.linear(h_norm, self.W)
         h_out = F.gelu(z) * gated_att
         
-        # v8.8 Absolute Anchor (0.02) for 32-layer GNN scale
-        return h + h_out * 0.02
+        # v8.10 Learning Ramp (0.08) for 32-layer GNN scale
+        return h + h_out * 0.08
 
     def compute_drm_error(self, e):
         """
@@ -58,9 +58,9 @@ class APTPBlockV8(nn.Module):
 
     def update_weights(self, h_p1, h_p2, lr=1e-4, weight_decay=1e-6):
         """
-        v8.8: Absolute Stability Governor.
-        Implements Matrix Norm Normalization (Norm 0.1) to prevent 
-        any single batch from Destructive Weight Shifts.
+        v8.10: Learning Ramp Governor.
+        Implements Matrix Norm Normalization (Norm 1.0) to allow 
+        Plasticity while preventing Destructive Weight Shifts.
         """
         error_signal = h_p2 - h_p1
         error_flat = error_signal.view(-1, error_signal.size(-1)).to(torch.float32)
@@ -69,10 +69,10 @@ class APTPBlockV8(nn.Module):
         # v8.6: Outer product update
         delta_W = torch.matmul(error_flat.t(), h_flat)
         
-        # v8.8: Matrix-Level Stability Governor (Max Norm 0.1)
+        # v8.10: Matrix-Level Stability Governor (Max Norm 1.0)
         # Prevents e+25 divergence by capping the total adjustment
         update_norm = delta_W.norm()
-        max_update_norm = 0.1
+        max_update_norm = 1.0
         if update_norm > max_update_norm:
             delta_W *= (max_update_norm / (update_norm + 1e-6))
 
