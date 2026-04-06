@@ -20,11 +20,11 @@ class APTPBlockV8(nn.Module):
     """
     def __init__(self, d_model, device="cpu"):
         super().__init__()
-        # Conservative Init for 3.2B Stability (1/sqrt(dim))
-        std = math.sqrt(1.0 / (d_model))
+        # v8.8 Absolute Stability Init (0.5 * sqrt(1/dim))
+        std = 0.5 * math.sqrt(1.0 / (d_model))
         self.W = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std, std), requires_grad=False)
         self.R = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std * 0.1, std * 0.1), requires_grad=False)
-        self.gamma = nn.Parameter(torch.ones(1, device=device) * 20.0, requires_grad=False) # High initial plasticity v8.6
+        self.gamma = nn.Parameter(torch.ones(1, device=device) * 20.0, requires_grad=False) # Plasticity gain v8.6
         
         # v8.3: Pre-LayerNorm for gradient stability
         self.norm = nn.LayerNorm(d_model, device=device)
@@ -42,8 +42,8 @@ class APTPBlockV8(nn.Module):
         z = F.linear(h_norm, self.W)
         h_out = F.gelu(z) * gated_att
         
-        # v8.7: Deep Signal Anchor (0.05) for 32-layer stability
-        return h + h_out * 0.05 
+        # v8.8 Absolute Anchor (0.02) for 32-layer GNN scale
+        return h + h_out * 0.02
 
     def compute_drm_error(self, e):
         """
@@ -58,18 +58,24 @@ class APTPBlockV8(nn.Module):
 
     def update_weights(self, h_p1, h_p2, lr=1e-4, weight_decay=1e-6):
         """
-        v8.6: Kickstart Normalization.
-        Uses Square-Root sequence scaling for stability.
+        v8.8: Absolute Stability Governor.
+        Implements Matrix Norm Normalization (Norm 0.1) to prevent 
+        any single batch from Destructive Weight Shifts.
         """
         error_signal = h_p2 - h_p1
-        
-        # Flatten batch and seq for weight update
         error_flat = error_signal.view(-1, error_signal.size(-1)).to(torch.float32)
         h_flat = h_p1.view(-1, h_p1.size(-1)).to(torch.float32)
         
-        # Outer product update
+        # v8.6: Outer product update
         delta_W = torch.matmul(error_flat.t(), h_flat)
         
+        # v8.8: Matrix-Level Stability Governor (Max Norm 0.1)
+        # Prevents e+25 divergence by capping the total adjustment
+        update_norm = delta_W.norm()
+        max_update_norm = 0.1
+        if update_norm > max_update_norm:
+            delta_W *= (max_update_norm / (update_norm + 1e-6))
+
         # v8.6: Stable Square-Root Normalization
         norm_factor = math.sqrt(h_p1.size(1))
         self.W.add_(delta_W.to(self.W.dtype), alpha=lr / norm_factor)
