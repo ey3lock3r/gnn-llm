@@ -6,7 +6,7 @@ import math
 from typing import List, Optional
 
 class EntropyBalancedAttention(nn.Module):
-    def __init__(self, tau=0.1):
+    def __init__(self, tau=0.02): # v8.12 Semantic Sharpening (tau 0.02)
         super().__init__()
         self.tau = tau
     def forward(self, h_i, h_j):
@@ -24,13 +24,13 @@ class APTPBlockV8(nn.Module):
         std = 0.5 * math.sqrt(1.0 / (d_model))
         self.W = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std, std), requires_grad=False)
         self.R = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std * 0.1, std * 0.1), requires_grad=False)
-        self.gamma = nn.Parameter(torch.ones(1, device=device) * 20.0, requires_grad=False) # Plasticity gain v8.6
+        self.gamma = nn.Parameter(torch.ones(1, device=device) * 60.0, requires_grad=False) # v8.12 High-Voltage Gain
         
         # v8.3: Pre-LayerNorm for gradient stability
         self.norm = nn.LayerNorm(d_model, device=device)
         self.norm.weight.requires_grad = False
         self.norm.bias.requires_grad = False
-        self.eba = EntropyBalancedAttention(tau=0.1)
+        self.eba = EntropyBalancedAttention(tau=0.02) # v8.12 Semantic Sharpening
         
     def forward_pass(self, h):
         """Standard Forward Pass (P1) with Deep Variance Anchor + EBA"""
