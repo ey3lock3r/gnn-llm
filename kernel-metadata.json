@@ -1,0 +1,14 @@
+{
+  "id": "ey3lock3r/apton-gnn-llm",
+  "title": "apton-gnn-llm",
+  "code_file": "kaggle_training.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
