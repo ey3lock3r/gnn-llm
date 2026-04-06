@@ -5,7 +5,7 @@ import os
 from .base import GigaModel
 
 class EntropyBalancedAttention(nn.Module):
-    def __init__(self, tau=0.02):
+    def __init__(self, tau=0.01):
         super().__init__()
         self.tau = tau
     def forward(self, h_i, h_j):
@@ -18,7 +18,7 @@ class NoPropBlock(nn.Module):
         self.d_model = d_model
         self.W = nn.Linear(d_model * 2, d_model, bias=False, device=device)
         self.norm = nn.LayerNorm(d_model, device=device)
-        self.eba = EntropyBalancedAttention(tau=0.02)
+        self.eba = EntropyBalancedAttention(tau=0.01)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
 
     def forward(self, x, z_prev):
@@ -27,7 +27,7 @@ class NoPropBlock(nn.Module):
         h_norm = self.norm(h)
         att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
         gated_att = torch.diagonal(att).view(-1, 1, 1)
-        return z_prev + h * gated_att * 0.1
+        return z_prev + h * gated_att * 0.4
 
     def train_block(self, x, z_prev, z_target):
         self.optimizer.zero_grad()
@@ -47,8 +47,11 @@ class NoPropModel(GigaModel):
         
     def generate_noise_path(self, y_embed, depth):
         path = []
+        import math
         for d in range(depth + 1):
-            noise_factor = (depth - d) / depth
+            # Cosine Noise Schedule: noise_factor = 0.5 * (1 + cos(pi * d / depth))
+            # d=0: 1.0 (max noise), d=depth: 0.0 (clean target)
+            noise_factor = 0.5 * (1 + math.cos(math.pi * d / depth))
             noise = torch.randn_like(y_embed) * noise_factor
             path.append(y_embed + noise)
         return path
