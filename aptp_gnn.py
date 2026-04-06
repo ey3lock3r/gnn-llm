@@ -121,7 +121,7 @@ class GigaGraph_3B(nn.Module):
             block.update_weights(h_p1, h_p2, lr=lr)
             
         # Final Cross-Entropy Loss
-        return F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+        return F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1).to(logits.device))
 
 if __name__ == "__main__":
     print("Initializing GigaGraph 3.2B (v8.1)...")
