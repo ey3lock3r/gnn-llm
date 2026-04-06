@@ -33,23 +33,28 @@ class APTPBlockV8(nn.Module):
         self.eba = EntropyBalancedAttention(tau=0.1)
         
     def forward_pass(self, h):
-        """Standard Forward Pass (P1) with Variance-Scaled Residual + EBA"""
+        """Standard Forward Pass (P1) with Deep Variance Anchor + EBA"""
         h_norm = self.norm(h)
         
-        # v8.3.2: Correct EBA integration (Competitive inhibition)
         att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
-        gated_att = torch.diagonal(att).view(-1, 1, 1) # Self-influence gate
+        gated_att = torch.diagonal(att).view(-1, 1, 1)
         
         z = F.linear(h_norm, self.W)
         h_out = F.gelu(z) * gated_att
         
-        # v8.3.2: Residual Scaling (1/sqrt(depth)) to prevent signal explosion
-        # 1/sqrt(32) approx 0.17
-        return h + h_out * 0.17 
+        # v8.7: Deep Signal Anchor (0.05) for 32-layer stability
+        return h + h_out * 0.05 
 
     def compute_drm_error(self, e):
-        """Dynamic Residual Modulation (DRM)"""
-        return torch.matmul(torch.tanh(e * self.gamma), self.R.t())
+        """
+        v8.7: Clipped DRM Modulation.
+        Prevents destructive updates by capping the error norm.
+        """
+        mod = torch.matmul(torch.tanh(e * self.gamma), self.R.t())
+        # Capping the update magnitude
+        norm = mod.norm(p=2, dim=-1, keepdim=True)
+        max_norm = 1.0
+        return mod * (max_norm / torch.clamp(norm, min=max_norm))
 
     def update_weights(self, h_p1, h_p2, lr=1e-4, weight_decay=1e-6):
         """
