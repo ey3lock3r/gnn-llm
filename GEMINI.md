@@ -1,44 +1,115 @@
-# APTP-GNN: GigaGraph 3.2B Context (v8.1.1)
+# APTP-GNN: GigaGraph 3.2B → 8B (v10.0)
 
 ### 🚀 High-Level Objective
-Building a **Biologically Plausible**, backprop-free Large Language Model (LLM) at scale (3.2B -> 8B parameters).
+Building a **Biologically Plausible**, backprop-free Large Language Model (LLM) at scale (3.2B → 8B parameters).
+
+---
+
+### 🗂️ Project Structure (v10.0 Standard)
+```
+gnn-llm/
+├── gnn_llm/                  # Main Python package (IMPORT FROM HERE)
+│   ├── __init__.py           # build_model() factory + MODEL_REGISTRY
+│   ├── models/
+│   │   ├── base.py           # GigaModel ABC (all models must implement this)
+│   │   ├── aptp.py           # APTP-GNN v8.12 (3.2B, Dual-T4 sharded)
+│   │   └── noprop.py         # NoProp v9.0 (100M prototype, BP-free denoising)
+│   ├── data/
+│   │   └── pipeline.py       # GigaDataPipeline (FineWeb-Edu 80/20 stream)
+│   └── training/
+│       ├── trainer.py        # run_training() unified loop (algorithm-agnostic)
+│       └── utils.py          # init_wandb(), checkpoint helpers
+├── tests/
+│   └── unit/
+│       ├── test_models.py    # Build, forward, checkpoint round-trip
+│       └── test_trainer.py   # Training loop regression
+├── train.ipynb               # ✅ UNIFIED ENTRY POINT (Kaggle)
+├── kernel-metadata.json      # Kaggle deployment config
+├── legacy/                   # Archived old scripts (do not edit)
+│   ├── aptp_gnn.py
+│   ├── noprop_gnn.py
+│   ├── data_pipeline.py
+│   └── kaggle_training.ipynb
+├── scripts/                  # One-off utility scripts
+├── docs/                     # Research notes, analysis
+├── pyproject.toml
+└── GEMINI.md
+```
+
+---
 
 ### 🧬 Core Architecture
-- **Algorithm:** **APTP (Asynchronous PEPITA-TargetProp)**. A two-pass forward-only update rule for GNNs that eliminates backpropagation.
-- **Scaling Phase:** **GigaGraph v8.1.1** (3.2B parameters).
-  - `d_model`: 3072.
-  - `depth`: 32 blocks.
-  - `max_seq_len`: 4096.
-  - **EBA Attention:** Entropy-Balanced Attention (competitive inhibition).
-- **Distributed Strategy:** **Layer-Sharding** (16 blocks on `cuda:0`, 16 blocks on `cuda:1`). 
+- **Algorithm:** **APTP** (Asynchronous PEPITA-TargetProp) AND **NoProp** (Block-wise Denoising, 2025).
+- **Scaling Phase:** **GigaGraph v8.12** (3.2B parameters).
+  - `d_model=3072`, `depth=32`, `max_seq_len=4096`
+  - **EBA Attention:** Entropy-Balanced Attention (`tau=0.02`, Semantic Sharpening)
+- **NoProp Prototype:** `d_model=768`, `depth=8` (100M)
+- **Distributed Strategy:** Layer-Sharding (16 blocks on `cuda:0`, 16 blocks on `cuda:1`)
+
+---
+
+### ⚙️ Workflow Standards (v10.0)
+
+#### Adding a New Algorithm
+1. Create `gnn_llm/models/myalgo.py` implementing `GigaModel` (inherit `base.py`).
+2. Implement `train_step(x, y, **kwargs)`, `save_checkpoint(path, step)`, `load_checkpoint(path)`.
+3. Register it in `gnn_llm/__init__.py` → `MODEL_REGISTRY`.
+4. Add unit tests in `tests/unit/test_models.py`.
+5. Select it in `train.ipynb` by setting `CONFIG['algorithm'] = 'myalgo'`.
+
+#### Before Any Kaggle Push
+```bash
+# Always run tests first
+uv run pytest tests/ -v
+# Only push if all tests pass
+uv run kaggle kernels push -p .
+```
+
+#### Switching Algorithms in train.ipynb
+Change one line at the top of Cell 1:
+```python
+CONFIG['algorithm'] = 'aptp'    # 3.2B run
+CONFIG['algorithm'] = 'noprop'  # 100M prototype
+```
+
+---
 
 ### 🗂️ Data & Pipeline
-- **Dataset Mix:** 80% **FineWeb-Edu-10BT** (Clean CommonCrawl) + 20% Logical Reasoning (Coding).
-- **Tokenizer:** **Meta-Llama-3-8B** (128k Vocabulary).
-- **Loader:** Streaming interleaved datasets using Hugging Face `datasets` library.
+- **Dataset Mix:** 80% **FineWeb-Edu-10BT** + 20% Logical Reasoning
+- **Tokenizer:** **Meta-Llama-3-8B** (128k Vocabulary)
+- **Loader:** `GigaDataPipeline` in `gnn_llm/data/pipeline.py`
 
-### 🛠️ Directory Structure
-- `aptp_gnn.py`: Core architecture & local update rules.
-- `data_pipeline.py`: Llama-3 + FineWeb mixed streaming loader.
-- `kaggle_training.ipynb`: Self-extracting training bundle. 
-  - **Note:** Modify via `sed` if JSON escaping bugs occur during automated `write_to_file`.
-- `smoke_test.py`: Critical verification for Llama-3 and distributed sharding.
-
-### 🧪 Notebook Safety Protocol
-- **JSON Integrity:** Kaggle's `push` tool is extremely sensitive to JSON syntax. 
-- **Repair Rule:** If a push fails with `Expecting property name enclosed in double quotes`, always run:
-  `sed -i 's/\\"/\"/g' kaggle_training.ipynb`
-- **Reloading:** The notebook uses `importlib.reload` to ensure GitHub changes are captured without a kernel restart.
+---
 
 ### 🔑 Environment & Secrets
-- **HF_TOKEN:** Hugging Face token (Must have "Gated Models" access for Llama-3).
-- **WANDB_API_KEY:** Weights & Biases API key.
-- **Kaggle Setup:** Internet access: **True**, GPU access: **True**, Secrets attached: **Required**.
+- **HF_TOKEN:** Hugging Face token (Must have Llama-3 Gated access)
+- **WANDB_API_KEY:** Weights & Biases API key
+- **Kaggle Setup:** Internet: True, GPU: t4_x2, Secrets attached
+
+---
+
+### 🧪 Testing Protocol
+```bash
+# Run full suite before any Kaggle push
+uv run pytest tests/ -v --tb=short
+
+# Run specific test
+uv run pytest tests/unit/test_models.py::test_aptp_train_step -v
+```
+
+---
 
 ### 📉 Convergence Metrics
-- **GPT-2 Baseline (50k Vocab):** Initial Loss ~10.8.
-- **Llama-3 Baseline (128k Vocab):** Initial Loss ~11.76.
-- **Target:** Perplexity (PPL) decline from ~120,000 to <50.
+- **Llama-3 Baseline (128k Vocab):** Initial Loss ~11.76
+- **APTP v8.12 Status:** Stable at 11.9 (Breakout in progress)
+- **NoProp Target:** MSE denoising loss → should approach < 1.0
 
-### 🔭 Next Scaling Stage: GigaGraph 8B
-Current architecture (v8.1.1) is designed with 8B-compatibility. Shifting to 8B requires `d_model=4096, depth=32, num_heads=32` and multi-node sharding.
+---
+
+### 🔭 Roadmap
+| Version | Algorithm | Parameters | Status |
+|---------|-----------|-----------|--------|
+| v8.12 | APTP-GNN | 3.2B | Training (Plateau 11.9) |
+| v9.0 | NoProp | 100M | Prototype |
+| v10.0 | Unified | Both | ✅ Active |
+| v11.0 | NoProp-Scale | 8B | Planned |

@@ -1,7 +1,7 @@
 {
-  "id": "ey3lock3r/gigagraph-v9-noprop-prototype",
-  "title": "GigaGraph v9 NoProp Prototype",
-  "code_file": "noprop_training.ipynb",
+  "id": "ey3lock3r/gigagraph-v10-unified",
+  "title": "GigaGraph v10 Unified",
+  "code_file": "train.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": "true",
