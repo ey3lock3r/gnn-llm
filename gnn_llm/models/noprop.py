@@ -32,9 +32,6 @@ class NoPropBlock(nn.Module):
         if use_fp16:
             self.W.half()
             self.norm.half()
-            
-        # Hyper-Stable v11.2: Adam epsilon set to 1e-4 for FP16 stability
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, eps=1e-4)
 
     def forward(self, x, z_prev):
         if self.use_fp16:
@@ -51,23 +48,6 @@ class NoPropBlock(nn.Module):
         # Stability Gain
         z_next = z_prev + h * gated_att * 0.1
         return z_next
-
-    def train_block(self, x, z_prev, z_target):
-        x = x.to(self.device).detach()
-        z_prev = z_prev.to(self.device).detach()
-        z_target = z_target.to(self.device).detach().to(self.W.weight.dtype)
-        
-        self.optimizer.zero_grad()
-        z_pred = self.forward(x, z_prev)
-        loss = F.mse_loss(z_pred, z_target)
-        loss.backward()
-        # Hyper-Stable v11.3: Fast element-wise value clipping instead of 
-        # the slow global norm reduction.
-        torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
-        
-        self.optimizer.step()
-            
-        return loss.item()
 
 class NoPropModel(GigaModel):
     def __init__(self, vocab_size, d_model, depth, device="cpu", use_fp16=True):
@@ -94,9 +74,10 @@ class NoPropModel(GigaModel):
             self.blocks.append(NoPropBlock(d_model, device=block_device, use_fp16=use_fp16))
             
         self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device1)
-        nn.init.trunc_normal_(self.head.weight, std=0.01)
-        if use_fp16:
-            self.head.half()
+        
+        # Hyper-Stable v11.4: Weight Tying + Global Optimizer
+        self.head.weight = self.embed.weight
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, eps=1e-4)
         
     def generate_noise_path(self, y_embed, depth):
         path = []
@@ -112,10 +93,25 @@ class NoPropModel(GigaModel):
         y_embed = self.embed(y).detach() / math.sqrt(self.d_model)
         path = self.generate_noise_path(y_embed, self.depth)
         
+        self.optimizer.zero_grad()
         total_loss = 0
+        
         for d in range(self.depth):
-            loss = self.blocks[d].train_block(x_embed, path[d], path[d+1])
-            total_loss += loss
+            block = self.blocks[d]
+            target_device = next(block.parameters()).device
+            
+            x_d = x_embed.to(target_device)
+            z_prev = path[d].to(target_device)
+            z_target = path[d+1].to(target_device).to(block.W.weight.dtype)
+            
+            z_pred = block.forward(x_d, z_prev)
+            loss = F.mse_loss(z_pred, z_target)
+            loss.backward()
+            total_loss += loss.item()
+            
+        # Global Kernel Fusion (v11.4): One clip & step across all blocks
+        torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
+        self.optimizer.step()
             
         return total_loss / self.depth
 
