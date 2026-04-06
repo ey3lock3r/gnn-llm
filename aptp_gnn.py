@@ -15,27 +15,36 @@ class EntropyBalancedAttention(nn.Module):
 
 class APTPBlockV8(nn.Module):
     """
-    v8.1 Scaled Architecture: High-Dimension APTP Block.
+    v8.3 Scaled Architecture: High-Dimension APTP Block.
+    Implements Residual Pre-LayerNorm and Kaiming Init.
     """
     def __init__(self, d_model, device="cpu"):
         super().__init__()
-        self.W = nn.Parameter(torch.randn(d_model, d_model, device=device) * 0.005, requires_grad=False)
-        self.R = nn.Parameter(torch.randn(d_model, d_model, device=device), requires_grad=False)
-        self.gamma = nn.Parameter(torch.ones(1, device=device), requires_grad=False)
+        # Kaiming Uniform Init for 3.2B stability
+        std = math.sqrt(6.0 / (d_model + d_model))
+        self.W = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std, std), requires_grad=False)
+        self.R = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std * 0.1, std * 0.1), requires_grad=False)
+        self.gamma = nn.Parameter(torch.ones(1, device=device) * 2.0, requires_grad=False) # Stronger initial modulation
         
-        # v8.1: Integrated LayerNorm for signal stability at 3B scale
+        # v8.3: Pre-LayerNorm for gradient stability
         self.norm = nn.LayerNorm(d_model, device=device)
         self.norm.weight.requires_grad = False
         self.norm.bias.requires_grad = False
         self.eba = EntropyBalancedAttention(tau=0.1)
         
     def forward_pass(self, h):
-        """Standard Forward Pass (P1) with EBA Attention"""
+        """Standard Forward Pass (P1) with Residual + EBA"""
         h_norm = self.norm(h)
-        # Competitive Attention
+        
+        # v8.3: Correct EBA integration (Competitive inhibition across neighborhood)
+        # att is [B, B]. We scale the features by the mean activation probability.
         att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
+        gated_att = torch.diagonal(att).view(-1, 1, 1) # Self-influence gate
+        
         z = F.linear(h_norm, self.W)
-        return F.gelu(z)
+        h_out = F.gelu(z) * gated_att
+        
+        return h + h_out # Residual connection
 
     def compute_drm_error(self, e):
         """Dynamic Residual Modulation (DRM)"""
