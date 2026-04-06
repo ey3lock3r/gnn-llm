@@ -1,15 +1,15 @@
 {
- "id": "ey3lock3r/gigagraph-3-2b-breakout",
- "title": "GigaGraph 3.2B Breakout Run",
- "code_file": "kaggle_training.ipynb",
- "language": "python",
- "kernel_type": "notebook",
- "is_private": "true",
- "enable_gpu": "true",
- "gpu_type": "t4_x2",
- "enable_internet": "true",
- "dataset_sources": [],
- "competition_sources": [],
- "kernel_sources": [],
- "model_sources": []
+  "id": "ey3lock3r/gigagraph-3b-v8-12-breakout",
+  "title": "GigaGraph 3B v8.12 Breakout",
+  "code_file": "kaggle_training.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "gpu_type": "t4_x2",
+  "enable_internet": "true",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
 }
