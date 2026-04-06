@@ -100,7 +100,7 @@ class GigaGraph_3B(nn.Module):
         # 2. Global Error Calculation
         with torch.no_grad():
             probs = torch.softmax(logits, dim=-1)
-            target = F.one_hot(y, num_classes=logits.size(-1)).float()
+            target = F.one_hot(y, num_classes=logits.size(-1)).float().to(logits.device)
             error_logits = target - probs
             global_error = torch.matmul(error_logits, self.lm_head.weight) # [B, S, DM]
             
