@@ -1,7 +1,7 @@
 {
-  "id": "ey3lock3r/gigagraph-3b-v8-12-breakout",
-  "title": "GigaGraph 3B v8.12 Breakout",
-  "code_file": "kaggle_training.ipynb",
+  "id": "ey3lock3r/gigagraph-v9-noprop-prototype",
+  "title": "GigaGraph v9 NoProp Prototype",
+  "code_file": "noprop_training.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": "true",
