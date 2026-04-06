@@ -20,9 +20,15 @@ Building a **Biologically Plausible**, backprop-free Large Language Model (LLM) 
 ### 🛠️ Directory Structure
 - `aptp_gnn.py`: Core architecture & local update rules.
 - `data_pipeline.py`: Llama-3 + FineWeb mixed streaming loader.
-- `kaggle_training.ipynb`: Self-extracting training bundle for Kaggle Dual T4.
-- `smoke_test.py`: Critical verification script for Llama-3 and distributed sharding.
-- `run_tests.sh`: Full test suite (Unit & Integration).
+- `kaggle_training.ipynb`: Self-extracting training bundle. 
+  - **Note:** Modify via `sed` if JSON escaping bugs occur during automated `write_to_file`.
+- `smoke_test.py`: Critical verification for Llama-3 and distributed sharding.
+
+### 🧪 Notebook Safety Protocol
+- **JSON Integrity:** Kaggle's `push` tool is extremely sensitive to JSON syntax. 
+- **Repair Rule:** If a push fails with `Expecting property name enclosed in double quotes`, always run:
+  `sed -i 's/\\"/\"/g' kaggle_training.ipynb`
+- **Reloading:** The notebook uses `importlib.reload` to ensure GitHub changes are captured without a kernel restart.
 
 ### 🔑 Environment & Secrets
 - **HF_TOKEN:** Hugging Face token (Must have "Gated Models" access for Llama-3).
