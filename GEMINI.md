@@ -127,3 +127,10 @@ uv run pytest tests/unit/test_models.py::test_aptp_train_step -v
 | v10.1 | NoProp-Proto| 100M | Validated (Breakout) |
 | v11.0 | NoProp-Scale| 3.2B | ✅ Active |
 | v12.0 | GigaScale | 8B | Planned |
+
+---
+
+### 🤖 AI Agent Implementation Guidelines (Lessons Learned)
+For any AI agents operating on this repository in the future:
+1. **Always `view_file` Before Replacements:** Do not rely on assumptions or memory of file contents when planning `multi_replace_file_content` operations. Minor discrepancies (like a moved `__init__` variable) will cause chunk failures. Always verify the exact target snippet first.
+2. **Toggles > Duplicate Files (DRY):** When exploring new variants (e.g., Fourier Mixing or Stochastic Depth), DO NOT create redundant algorithm copies (like `stochastic_noprop.py`). Inject modular logic "Toggles" via `CONFIG` into the core blocks. This keeps the codebase highly dense, avoids rot, and allows experiments to be freely mixed!
