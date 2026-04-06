@@ -6,12 +6,15 @@ import math
 from .base import GigaModel
 
 class EntropyBalancedAttention(nn.Module):
-    def __init__(self, tau=0.01):
+    def __init__(self, tau=0.02):
         super().__init__()
         self.tau = tau
     def forward(self, h_i, h_j):
-        scores = torch.matmul(h_i, h_j.t()) / self.tau
-        return torch.softmax(scores, dim=0)
+        # Hyper-Stable v11.2: Compute in FP32 and clip scores to [-10, 10]
+        # This prevents the softmax from snapping to 0/1 and creating gradient spikes
+        scores = torch.matmul(h_i.float(), h_j.t().float()) / self.tau
+        scores = torch.clamp(scores, min=-10.0, max=10.0)
+        return torch.softmax(scores, dim=0).to(h_i.dtype)
 
 class NoPropBlock(nn.Module):
     def __init__(self, d_model, device="cpu", use_fp16=True):
@@ -21,13 +24,16 @@ class NoPropBlock(nn.Module):
         self.use_fp16 = use_fp16
         
         self.W = nn.Linear(d_model * 2, d_model, bias=False, device=device)
-        self.norm = nn.LayerNorm(d_model, device=device)
-        self.eba = EntropyBalancedAttention(tau=0.01)
+        # Hyper-Stable v11.2: Hardened initialization and LayerNorm epsilon
+        nn.init.trunc_normal_(self.W.weight, std=0.01)
+        self.norm = nn.LayerNorm(d_model, device=device, eps=1e-4) # Hardened for FP16
+        self.eba = EntropyBalancedAttention(tau=0.02)
         
         if use_fp16:
             self.W.half()
             
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        # Hyper-Stable v11.2: Adam epsilon set to 1e-4 for FP16 stability
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, eps=1e-4)
 
     def forward(self, x, z_prev):
         if self.use_fp16:
@@ -41,7 +47,8 @@ class NoPropBlock(nn.Module):
         att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
         gated_att = torch.diagonal(att).view(-1, 1, 1)
         
-        z_next = z_prev + h * gated_att * 0.4
+        # Stability Gain
+        z_next = z_prev + h * gated_att * 0.1
         return z_next
 
     def train_block(self, x, z_prev, z_target):
@@ -53,6 +60,10 @@ class NoPropBlock(nn.Module):
         z_pred = self.forward(x, z_prev)
         loss = F.mse_loss(z_pred, z_target)
         loss.backward()
+        
+        # Hyper-Stable v11.2: Gradient Clipping at 1.0
+        torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+        
         self.optimizer.step()
             
         return loss.item()
@@ -71,13 +82,16 @@ class NoPropModel(GigaModel):
             self.device1 = device
             
         self.embed = nn.Embedding(vocab_size, d_model, device=self.device0)
-        
+        # Hyper-Stable v11.2: Scaled embedding initialization
+        nn.init.trunc_normal_(self.embed.weight, std=0.01)
+
         self.blocks = nn.ModuleList()
         for d in range(depth):
             block_device = self.device0 if d < depth // 2 else self.device1
             self.blocks.append(NoPropBlock(d_model, device=block_device, use_fp16=use_fp16))
             
         self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device1)
+        nn.init.trunc_normal_(self.head.weight, std=0.01)
         if use_fp16:
             self.head.half()
         
@@ -90,8 +104,9 @@ class NoPropModel(GigaModel):
         return path
 
     def train_step(self, x, y, **kwargs):
-        x_embed = self.embed(x).detach()
-        y_embed = self.embed(y).detach()
+        # Hyper-Stable v11.2: Input Scaling (Transformer best practice)
+        x_embed = self.embed(x).detach() / math.sqrt(self.d_model)
+        y_embed = self.embed(y).detach() / math.sqrt(self.d_model)
         path = self.generate_noise_path(y_embed, self.depth)
         
         total_loss = 0
@@ -112,39 +127,33 @@ class NoPropModel(GigaModel):
         
         generated = []
         for _ in range(max_new_tokens):
-            # 1. Condition on prompt
-            x_embed = self.embed(current_context).detach() # [Batch, Seq, D]
+            # 1. Condition on prompt (Hyper-Stable scaling applied)
+            x_embed = (self.embed(current_context).detach() / math.sqrt(self.d_model))
             
-            # 2. Sample initial noise for the next token position
-            # Since NoProp blocks are independent, we just need a starting z_0
+            # 2. Sample initial noise
             z = torch.randn(x_embed.size(0), 1, self.d_model, device=device)
             if self.use_fp16:
                 z = z.half()
                 x_embed = x_embed.half()
                 
-            # 3. Denoising Chain: Block 0 -> Block 1 -> ... -> Block D
+            # 3. Denoising Chain
             for d in range(self.depth):
                 block = self.blocks[d]
-                # Cross-device transfer if needed
                 target_device = next(block.parameters()).device
                 if z.device != target_device:
                     z = z.to(target_device)
                 
-                # Global conditioning: Pool the prompt context to match the next-token shape [Batch, 1, D]
                 x_pool = x_embed.to(target_device).mean(dim=1, keepdim=True)
-                
-                # Each block denoises one 'depth step'
                 z = block.forward(x_pool, z)
             
-            # 4. Final Decode (on device1)
+            # 4. Final Decode
             z = z.to(self.device1)
-            logits = self.head(z[:, -1, :]) / temperature # [Batch, Vocab]
-            next_token = torch.argmax(logits, dim=-1, keepdim=True) # Greedy
+            logits = self.head(z[:, -1, :]) / (temperature + 1e-6)
+            next_token = torch.argmax(logits, dim=-1, keepdim=True)
             
             generated.append(next_token)
             current_context = torch.cat([current_context, next_token.to(device)], dim=1)
             
-            # Stop if EOS (optional, but Llama-3 EOS is 128009)
             if next_token.item() == 128009: 
                 break
                 
