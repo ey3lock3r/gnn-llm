@@ -31,6 +31,7 @@ class NoPropBlock(nn.Module):
         
         if use_fp16:
             self.W.half()
+            self.norm.half()
             
         # Hyper-Stable v11.2: Adam epsilon set to 1e-4 for FP16 stability
         self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, eps=1e-4)
@@ -84,6 +85,8 @@ class NoPropModel(GigaModel):
         self.embed = nn.Embedding(vocab_size, d_model, device=self.device0)
         # Hyper-Stable v11.2: Scaled embedding initialization
         nn.init.trunc_normal_(self.embed.weight, std=0.01)
+        if use_fp16:
+            self.embed.half()
 
         self.blocks = nn.ModuleList()
         for d in range(depth):
