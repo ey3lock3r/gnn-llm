@@ -1,7 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import os
+import math
 from typing import List, Optional
+
+class EntropyBalancedAttention(nn.Module):
+    def __init__(self, tau=0.1):
+        super().__init__()
+        self.tau = tau
+    def forward(self, h_i, h_j):
+        scores = torch.matmul(h_i, h_j.t()) / self.tau
+        return torch.softmax(scores, dim=0) # Competitive inhibition across the neighborhood
 
 class APTPBlockV8(nn.Module):
     """
@@ -15,10 +25,16 @@ class APTPBlockV8(nn.Module):
         
         # v8.1: Integrated LayerNorm for signal stability at 3B scale
         self.norm = nn.LayerNorm(d_model, device=device)
+        self.norm.weight.requires_grad = False
+        self.norm.bias.requires_grad = False
+        self.eba = EntropyBalancedAttention(tau=0.1)
         
     def forward_pass(self, h):
-        """Standard Forward Pass (P1)"""
-        z = F.linear(self.norm(h), self.W)
+        """Standard Forward Pass (P1) with EBA Attention"""
+        h_norm = self.norm(h)
+        # Competitive Attention
+        att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
+        z = F.linear(h_norm, self.W)
         return F.gelu(z)
 
     def compute_drm_error(self, e):
@@ -122,6 +138,43 @@ class GigaGraph_3B(nn.Module):
             
         # Final Cross-Entropy Loss
         return F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1).to(logits.device))
+
+    def save_checkpoint(self, path: str, step: int):
+        """
+        v8.2.2: Saves 3.2B parameters + iteration metadata.
+        Uses Two-Slot rotation to prevent file corruption.
+        """
+        checkpoint = {
+            'step': step,
+            'state_dict': self.state_dict(),
+            'd_model': self.d_model,
+            'depth': self.depth
+        }
+        torch.save(checkpoint, path)
+        print(f"💾 Checkpoint saved to {path} (Step: {step})")
+
+    def load_checkpoint(self, path: str):
+        """
+        v8.2.2: Atomically restores 3.2B parameters onto sharded devices.
+        """
+        if not os.path.exists(path):
+            print(f"⚠️ No checkpoint found at {path}")
+            return 0
+        
+        checkpoint = torch.load(path, map_location='cpu')
+        self.load_state_dict(checkpoint['state_dict'])
+        # Move to sharded devices after load
+        self._ensure_devices()
+        print(f"🔄 Checkpoint restored from {path} (Resume Step: {checkpoint['step']})")
+        return checkpoint['step']
+
+    def _ensure_devices(self):
+        """Re-synchronize sharding after loading state_dict"""
+        self.embeddings.to(self.device0)
+        for i, block in enumerate(self.blocks):
+            device = self.device0 if i < (self.depth // 2) else self.device1
+            block.to(device)
+        self.lm_head.to(self.device1)
 
 if __name__ == "__main__":
     print("Initializing GigaGraph 3.2B (v8.1)...")

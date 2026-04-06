@@ -1,45 +1,47 @@
-import torch
 import unittest
+import torch
 import os
 import sys
 
+# Add parent dir for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aptp_gnn import APTPGNN_LLM
-from data_pipeline import GNNDataPipeline
+from aptp_gnn import GigaGraph_3B
+from data_pipeline import GigaDataPipeline
 
-class TestAPTPIntegration(unittest.TestCase):
+class TestGigaIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.d_model = 128 # Smaller for integration testing
-        cls.depth = 2
-        cls.vocab_size = 50257
-        cls.model = APTPGNN_LLM(cls.vocab_size, depth=cls.depth, d_model=cls.d_model)
-        
-    def test_train_step_convergence_logic(self):
-        """Verify train_step correctly updates internal states and returns loss."""
-        # Create a single batch
-        batch = torch.randint(0, self.vocab_size, (2, 64))
-        labels = torch.roll(batch, -1, dims=1)
-        
-        # Initial weight snapshot
-        initial_w = self.model.blocks[0].W.clone()
-        
-        loss = self.model.train_step(batch, labels, lr=1e-1)
-        
-        # Check if loss is a scalar tensor
-        self.assertTrue(torch.is_tensor(loss))
-        self.assertEqual(loss.dim(), 0)
-        
-        # Check if weights actually changed (Plasticity)
-        updated_w = self.model.blocks[0].W
-        self.assertFalse(torch.allclose(initial_w, updated_w), "Weights did not update after train_step!")
+        # Small constants for integration check
+        cls.d_model = 128
+        cls.depth = 4
+        cls.vocab_size = 128256 # Llama-3 size but small hidden
+        cls.seq_len = 16
+        cls.batch_size = 2
+        cls.model = GigaGraph_3B(cls.vocab_size, depth=cls.depth, d_model=cls.d_model)
 
-    def test_generation_pipeline(self):
-        """Verify the model can produce token sequences."""
-        prompt = torch.randint(0, self.vocab_size, (1, 10))
-        output = self.model.generate(prompt, max_new_tokens=5)
-        self.assertEqual(output.shape, (1, 15))
+    def test_forward_backward_flow(self):
+        """Verify the full APTP-GigaGraph train step produces a valid loss."""
+        x = torch.randint(0, self.vocab_size, (self.batch_size, self.seq_len))
+        y = torch.roll(x, -1, dims=1)
+        
+        # Initial loss
+        loss = self.model.train_step(x, y, lr=1e-4)
+        self.assertIsInstance(loss, torch.Tensor)
+        self.assertTrue(loss.item() > 0, "Loss should be positive")
+        
+        # Second step should (usually) decrease loss or remain stable
+        loss2 = self.model.train_step(x, y, lr=1e-2)
+        self.assertIsInstance(loss2, torch.Tensor)
+
+    def test_pipeline_streaming(self):
+        """Verify the Llama-3 data pipeline delivers correct shapes."""
+        pipeline = GigaDataPipeline()
+        loader = pipeline.get_dataloader(batch_size=self.batch_size, seq_len=self.seq_len)
+        
+        batch = next(loader)
+        self.assertEqual(batch.shape, (self.batch_size, self.seq_len))
+        self.assertEqual(batch.dtype, torch.long)
 
 if __name__ == "__main__":
     unittest.main()

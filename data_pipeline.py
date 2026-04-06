@@ -49,18 +49,20 @@ class GigaDataPipeline:
             stopping_strategy="all_exhausted"
         )
 
-    def get_dataloader(self, batch_size=4, seq_len=1024):
+    def get_dataloader(self, batch_size=4, seq_len=1024, skip_steps=0):
         """
-        Returns a generator of tokenized batches from the combined stream.
+        v8.2.2: Returns a generator, optionally skipping the first N batches.
+        Useful for resuming from a checkpoint.
         """
+        # Apply skip logic to the interleaved stream if skip_steps > 0
+        dataset = self.dataset.skip(skip_steps * batch_size) if skip_steps > 0 else self.dataset
+        
         buffer = []
-        for example in self.dataset:
+        for example in dataset:
             text = example["text"]
-            # Tokenize without limit to avoid truncation at this stage
             tokens = self.tokenizer(text, truncation=False)["input_ids"]
             buffer.extend(tokens)
             
-            # When we have enough tokens for a full batch
             while len(buffer) >= (batch_size * seq_len):
                 batch_tokens = buffer[:batch_size * seq_len]
                 buffer = buffer[batch_size * seq_len:]
