@@ -33,18 +33,19 @@ class APTPBlockV8(nn.Module):
         self.eba = EntropyBalancedAttention(tau=0.1)
         
     def forward_pass(self, h):
-        """Standard Forward Pass (P1) with Residual + EBA"""
+        """Standard Forward Pass (P1) with Variance-Scaled Residual + EBA"""
         h_norm = self.norm(h)
         
-        # v8.3: Correct EBA integration (Competitive inhibition across neighborhood)
-        # att is [B, B]. We scale the features by the mean activation probability.
+        # v8.3.2: Correct EBA integration (Competitive inhibition)
         att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
         gated_att = torch.diagonal(att).view(-1, 1, 1) # Self-influence gate
         
         z = F.linear(h_norm, self.W)
         h_out = F.gelu(z) * gated_att
         
-        return h + h_out # Residual connection
+        # v8.3.2: Residual Scaling (1/sqrt(depth)) to prevent signal explosion
+        # 1/sqrt(32) approx 0.17
+        return h + h_out * 0.17 
 
     def compute_drm_error(self, e):
         """Dynamic Residual Modulation (DRM)"""
