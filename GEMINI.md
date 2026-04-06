@@ -88,14 +88,25 @@ CONFIG['algorithm'] = 'noprop'  # 100M prototype
 
 ---
 
-### 🧪 Testing Protocol
-```bash
-# Run full suite before any Kaggle push
-uv run pytest tests/ -v --tb=short
+### 🧪 Testing Protocol (MANDATORY)
 
-# Run specific test
+> **Rule:** `uv run pytest` MUST be run after **every code change** — models, training logic, data pipeline, or config. ALL tests must pass before committing or pushing to Kaggle. No exceptions.
+
+```bash
+# Run full suite (always do this before any commit or Kaggle push)
+uv run pytest -v --tb=short
+
+# Run a specific test during development
 uv run pytest tests/unit/test_models.py::test_aptp_train_step -v
 ```
+
+**Test locations:**
+- `tests/unit/test_models.py` — Build, forward pass, checkpoint round-trip for all models
+- `tests/unit/test_trainer.py` — Training loop regression (no crash, no NaN)
+
+**pytest config** (in `pyproject.toml`):
+- Only collects from `tests/` — `legacy/` is excluded automatically.
+- Run `uv run pytest` from the project root.
 
 ---
 
