@@ -19,6 +19,6 @@ def get_next_checkpoint_slot(global_step):
     return CP_PATH_A if (global_step // SAVE_INTERVAL) % 2 == 1 else CP_PATH_B
 
 def init_wandb(project, run_id, resume='allow'):
+    wandb.init(project=project, resume=resume, id=run_id)
     wandb.define_metric('step')
     wandb.define_metric('*', step_metric='step')
-    wandb.init(project=project, resume=resume, id=run_id)
