@@ -71,6 +71,10 @@ CONFIG['algorithm'] = 'aptp'    # 3.2B run
 CONFIG['algorithm'] = 'noprop'  # 100M prototype
 ```
 
+#### Optimization & Problem-Solving Principle
+> **Rule:** Before proceeding with expensive computational overhead or heavy mathematical fixes, ALWAYS explore ways to fix or change things *without* the overhead. Only if there is absolutely no other mathematically sound way should we proceed with expensive overhead.
+
+
 ---
 
 ### 🗂️ Data & Pipeline
