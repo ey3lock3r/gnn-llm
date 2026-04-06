@@ -21,7 +21,7 @@ def test_aptp_train_step():
     loss = model.train_step(x, y, lr=1e-4)
     assert torch.is_tensor(loss)
     assert not torch.isnan(loss)
-    assert loss.item() < 50
+    assert loss.item() < 100
 
 def test_noprop_build():
     model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)

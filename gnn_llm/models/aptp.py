@@ -11,6 +11,8 @@ class EntropyBalancedAttention(nn.Module):
         self.tau = tau
     def forward(self, h_i, h_j):
         scores = torch.matmul(h_i, h_j.t()) / self.tau
+        # APTP Hybrid Fix: Clamp to avoid saturation
+        scores = torch.clamp(scores, min=-10.0, max=10.0)
         return torch.softmax(scores, dim=0)
 
 class APTPBlock(nn.Module):
@@ -72,10 +74,14 @@ class APTPModel(GigaModel):
             device = self.device0 if i < (depth // 2) else self.device1
             self.blocks.append(APTPBlock(d_model, device=device))
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False).to(self.device1)
-        for param in self.parameters():
-            param.requires_grad = False
+        
+        # APTP Hybrid Fix: Weight Tying + Trainable Vocab
+        self.lm_head.weight = self.embeddings.weight
+        self.embeddings.weight.requires_grad = True
+        self.vocab_optimizer = torch.optim.Adam(self.embeddings.parameters(), lr=1e-4)
 
     def train_step(self, x, y, lr=1e-4, **kwargs):
+        self.vocab_optimizer.zero_grad()
         h = self.embeddings(x) + self.pos_emb[:, :x.size(1), :]
         p1_activations = []
         for i, block in enumerate(self.blocks):
@@ -92,14 +98,23 @@ class APTPModel(GigaModel):
             error_logits = target - probs
             global_error = torch.matmul(error_logits, self.lm_head.weight)
             
-        for i, block in enumerate(self.blocks):
-            h_p1 = p1_activations[i]
-            e_g = global_error if i >= (self.depth // 2) else global_error.to(self.device0)
-            e_l = block.compute_drm_error(e_g)
-            h_p2 = block.forward_pass(h_p1 + e_l)
-            block.update_weights(h_p1, h_p2, lr=lr)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1).to(logits.device))
+        
+        # APTP Hybrid Fix: Global backprop specifically for the Vocabulary Space
+        # MUST happen before block updates to prevent inplace modification errors
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.embeddings.parameters(), clip_value=1.0)
+        self.vocab_optimizer.step()
+        
+        with torch.no_grad():
+            for i, block in enumerate(self.blocks):
+                h_p1 = p1_activations[i]
+                e_g = global_error if i >= (self.depth // 2) else global_error.to(self.device0)
+                e_l = block.compute_drm_error(e_g)
+                h_p2 = block.forward_pass(h_p1 + e_l)
+                block.update_weights(h_p1, h_p2, lr=lr)
             
-        return F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1).to(logits.device))
+        return loss
 
     def save_checkpoint(self, path, step):
         checkpoint = {
