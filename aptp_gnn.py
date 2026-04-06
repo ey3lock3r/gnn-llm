@@ -20,11 +20,11 @@ class APTPBlockV8(nn.Module):
     """
     def __init__(self, d_model, device="cpu"):
         super().__init__()
-        # Kaiming Uniform Init for 3.2B stability
-        std = math.sqrt(6.0 / (d_model + d_model))
+        # Conservative Init for 3.2B Stability (1/sqrt(dim))
+        std = math.sqrt(1.0 / (d_model))
         self.W = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std, std), requires_grad=False)
         self.R = nn.Parameter(torch.empty(d_model, d_model, device=device).uniform_(-std * 0.1, std * 0.1), requires_grad=False)
-        self.gamma = nn.Parameter(torch.ones(1, device=device) * 2.0, requires_grad=False) # Stronger initial modulation
+        self.gamma = nn.Parameter(torch.ones(1, device=device) * 10.0, requires_grad=False) # High initial plasticity
         
         # v8.3: Pre-LayerNorm for gradient stability
         self.norm = nn.LayerNorm(d_model, device=device)
