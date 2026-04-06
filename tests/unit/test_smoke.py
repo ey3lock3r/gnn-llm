@@ -61,7 +61,7 @@ class TestAPTPSmoke:
 class TestNoPropSmoke:
     def setup_method(self):
         self.model = build_model(
-            "noprop", vocab_size=VOCAB, d_model=64, depth=2, device="cpu"
+            "noprop", vocab_size=VOCAB, d_model=64, depth=2, device="cpu", use_fp16=False
         )
 
     def test_init_no_crash(self):
@@ -84,7 +84,7 @@ class TestNoPropSmoke:
     def test_checkpoint_and_resume(self, tmp_path):
         path = str(tmp_path / "noprop_smoke.pt")
         self.model.save_checkpoint(path, step=5)
-        model2 = build_model("noprop", vocab_size=VOCAB, d_model=64, depth=2, device="cpu")
+        model2 = build_model("noprop", vocab_size=VOCAB, d_model=64, depth=2, device="cpu", use_fp16=False)
         step = model2.load_checkpoint(path)
         assert step == 5
 

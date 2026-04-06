@@ -19,7 +19,7 @@ def test_aptp_loop_no_crash():
         assert not torch.isnan(loss)
 
 def test_noprop_loop_no_crash():
-    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu")
+    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
     for batch in fake_loader(5):
         y = torch.roll(batch, -1, dims=1)
         loss = model.train_step(batch, y)

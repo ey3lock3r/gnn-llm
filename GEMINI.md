@@ -40,11 +40,10 @@ gnn-llm/
 
 ### 🧬 Core Architecture
 - **Algorithm:** **APTP** (Asynchronous PEPITA-TargetProp) AND **NoProp** (Block-wise Denoising, 2025).
-- **Scaling Phase:** **GigaGraph v8.12** (3.2B parameters).
+- **Scaling Phase:** **GigaGraph v11.0** (3.2B parameters, NoProp).
   - `d_model=3072`, `depth=32`, `max_seq_len=4096`
-  - **EBA Attention:** Entropy-Balanced Attention (`tau=0.02`, Semantic Sharpening)
-- **NoProp Prototype:** `d_model=768`, `depth=8` (100M)
-- **Distributed Strategy:** Layer-Sharding (16 blocks on `cuda:0`, 16 blocks on `cuda:1`)
+  - **Denoising Path:** Asynchronous local learning (NoProp) with Cosine Schedule.
+  - **Distributed Strategy:** Layer-Sharding (16 blocks on `cuda:0`, 16 blocks on `cuda:1`) + FP16 Mixed Precision.
 
 ---
 
@@ -120,7 +119,7 @@ uv run pytest tests/unit/test_models.py::test_aptp_train_step -v
 ### 🔭 Roadmap
 | Version | Algorithm | Parameters | Status |
 |---------|-----------|-----------|--------|
-| v8.12 | APTP-GNN | 3.2B | Training (Plateau 11.9) |
-| v9.0 | NoProp | 100M | Prototype |
-| v10.0 | Unified | Both | ✅ Active |
-| v11.0 | NoProp-Scale | 8B | Planned |
+| v8.12 | APTP-GNN | 3.2B | Archived (Plateau 11.9) |
+| v10.1 | NoProp-Proto| 100M | Validated (Breakout) |
+| v11.0 | NoProp-Scale| 3.2B | ✅ Active |
+| v12.0 | GigaScale | 8B | Planned |

@@ -24,11 +24,11 @@ def test_aptp_train_step():
     assert loss.item() < 50
 
 def test_noprop_build():
-    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu")
+    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
     assert model is not None
 
 def test_noprop_train_step():
-    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu")
+    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
     x = make_batch()
     y = torch.roll(x, -1, dims=1)
     loss = model.train_step(x, y)
