@@ -35,6 +35,13 @@ def test_noprop_train_step():
     assert isinstance(loss, float)
     assert loss < 50
 
+def test_noprop_generate():
+    model = build_model("noprop", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
+    prompt = torch.randint(0, VOCAB, (1, 8))
+    tokens = model.generate(prompt, max_new_tokens=4)
+    assert tokens.shape == (1, 4)
+    assert torch.is_tensor(tokens)
+
 def test_checkpoint_roundtrip(tmp_path):
     model = build_model("aptp", vocab_size=VOCAB, depth=DEPTH, d_model=D_MODEL, device="cpu")
     path = str(tmp_path / "test_cp.pt")

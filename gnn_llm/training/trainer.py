@@ -17,10 +17,15 @@ def run_training(model, loader, config):
 
     lr = config.get('lr', 1e-3)
     warmup_steps = config.get('warmup_steps', 500)
+    max_steps = config.get('max_steps', float('inf'))
 
     pbar = tqdm(loader)
     for i, batch in enumerate(pbar):
         global_step = resume_step + i
+        if global_step >= max_steps:
+            print(f"✅ Reached max_steps ({max_steps}). Stopping training.")
+            break
+            
         curr_lr = lr * min(1.0, (global_step + 1) / warmup_steps)
 
         x = batch.to(next(model.parameters()).device if len(list(model.parameters())) > 0 else 'cpu')
