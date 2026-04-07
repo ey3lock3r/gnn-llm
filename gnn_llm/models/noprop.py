@@ -167,7 +167,7 @@ class NoPropModel(GigaModel):
                 z = block.forward(x_pool, z)
             
             # 4. Final Decode
-            z = z.to(self.device1)
+            z = z.to(self.head.weight.device)
             logits = self.head(z[:, -1, :]) / (temperature + 1e-6)
             next_token = torch.argmax(logits, dim=-1, keepdim=True)
             
