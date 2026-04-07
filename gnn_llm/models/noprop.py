@@ -112,6 +112,7 @@ class NoPropModel(GigaModel):
         
         self.optimizer.zero_grad()
         total_loss = 0
+        active_blocks = 0
         
         for d in range(self.depth):
             # v12.0 Experiment: Stochastic Layer-Wise Drop
@@ -129,12 +130,14 @@ class NoPropModel(GigaModel):
             loss = F.mse_loss(z_pred, z_target)
             loss.backward()
             total_loss += loss.item()
+            active_blocks += 1
             
         # Global Kernel Fusion (v11.4): One clip & step across all blocks
-        torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
-        self.optimizer.step()
+        if active_blocks > 0:
+            torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
+            self.optimizer.step()
             
-        return total_loss / self.depth
+        return total_loss / max(active_blocks, 1)
 
     @torch.no_grad()
     def generate(self, prompt_tokens, max_new_tokens=50, temperature=1.0):
