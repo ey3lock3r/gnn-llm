@@ -36,19 +36,32 @@ def run_training(model, loader, config):
         x = batch.to(next(model.parameters()).device if len(list(model.parameters())) > 0 else 'cpu')
         y = torch.roll(x, -1, dims=1)
 
-        loss = model.train_step(x, y, lr=curr_lr)
+        result = model.train_step(x, y, lr=curr_lr, config=config)
 
-        if torch.is_tensor(loss):
-            loss_val = loss.item()
-            if loss_val > 200 or torch.isnan(loss):
-                print(f"⚠️ Loss spike at step {global_step}: {loss_val:.4f}")
-                break
+        # Unified metrics handling (supports float loss or metrics dict)
+        if isinstance(result, dict):
+            loss_val = result.get('loss')
+            extra_metrics = {k: v for k, v in result.items() if k != 'loss'}
         else:
-            loss_val = loss
+            loss_val = result
+            extra_metrics = {}
+
+        if torch.is_tensor(loss_val):
+            loss_val = loss_val.item()
+
+        if loss_val > 200 or torch.isnan(torch.tensor(loss_val)):
+            print(f"⚠️ Loss spike at step {global_step}: {loss_val:.4f}")
+            break
 
         if global_step % 5 == 0:
-            wandb.log({'loss': loss_val, 'lr': curr_lr, 'step': global_step})
-            pbar.set_postfix({'step': global_step, 'loss': f'{loss_val:.4f}', 'lr': f'{curr_lr:.2e}'})
+            log_data = {'loss': loss_val, 'lr': curr_lr, 'step': global_step}
+            log_data.update(extra_metrics)
+            wandb.log(log_data)
+            
+            pbar_metrics = {'step': global_step, 'loss': f'{loss_val:.4f}'}
+            if 'hspc_actual_iters' in extra_metrics:
+                pbar_metrics['iters'] = extra_metrics['hspc_actual_iters']
+            pbar.set_postfix(pbar_metrics)
 
         if global_step > 0 and global_step % SAVE_INTERVAL == 0:
             model.save_checkpoint(get_next_checkpoint_slot(global_step, run_id), global_step)

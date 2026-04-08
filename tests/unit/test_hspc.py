@@ -22,11 +22,29 @@ def test_hspc_train_step_parallel():
     config = {
         'hspc_iters': 2,
         'hspc_relaxation': 'parallel',
-        'hspc_optimizer': 'adam'
+        'hspc_optimizer': 'adam',
+        'hspc_convergence_threshold': 1e-4
     }
-    loss = model.train_step(x, y, config=config)
-    assert isinstance(loss, float)
-    assert not torch.isnan(torch.tensor(loss))
+    result = model.train_step(x, y, config=config)
+    assert isinstance(result, dict)
+    assert 'loss' in result
+    assert 'hspc_actual_iters' in result
+    assert not torch.isnan(torch.tensor(result['loss']))
+
+def test_hspc_early_stopping():
+    model = build_model("hspc", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
+    x = make_batch()
+    y = torch.roll(x, -1, dims=1)
+    
+    # Large threshold should break immediately (iters=1)
+    config = {
+        'hspc_iters': 10,
+        'hspc_relaxation': 'parallel',
+        'hspc_optimizer': 'adam',
+        'hspc_convergence_threshold': 1.0 
+    }
+    result = model.train_step(x, y, config=config)
+    assert result['hspc_actual_iters'] < 10
 
 def test_hspc_train_step_sequential():
     model = build_model("hspc", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
@@ -38,9 +56,9 @@ def test_hspc_train_step_sequential():
         'hspc_relaxation': 'sequential',
         'hspc_optimizer': 'sgd'
     }
-    loss = model.train_step(x, y, config=config)
-    assert isinstance(loss, float)
-    assert not torch.isnan(torch.tensor(loss))
+    result = model.train_step(x, y, config=config)
+    assert isinstance(result, dict)
+    assert result['loss'] >= 0
 
 def test_hspc_checkpoint():
     model = build_model("hspc", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)

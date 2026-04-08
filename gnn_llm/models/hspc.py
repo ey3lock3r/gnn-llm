@@ -86,7 +86,7 @@ class HSPCModel(GigaModel):
         else:
             self.optimizer = torch.optim.SGD(self.parameters(), lr=lr, momentum=0.9)
 
-    def inference_relaxation(self, x_embed, y_target_embed, iters=10, noise_std=0.01, relaxation='parallel'):
+    def inference_relaxation(self, x_embed, y_target_embed, iters=10, noise_std=0.01, relaxation='parallel', threshold=0.0):
         """
         Iterative state relaxation (Pure HS-PC).
         Adjusts internal states z_l to minimize local prediction errors.
@@ -104,37 +104,45 @@ class HSPCModel(GigaModel):
         z[self.depth] = y_target_embed.to(self.head.weight.device)
         
         # 2. Relaxation Iterations
-        for _ in range(iters):
+        actual_iters = 0
+        for i in range(iters):
+            actual_iters = i + 1
+            max_delta = 0
+            
             if relaxation == 'parallel':
                 new_z = [z[0]] 
                 for d in range(1, self.depth):
                     block_prev, block_next = self.blocks[d-1], self.blocks[d]
-                    z_d = z[d].clone().detach().requires_grad_(True)
+                    z_old = z[d]
+                    z_d = z_old.clone().detach().requires_grad_(True)
                     
                     # Prediction dynamics
                     pred_d = block_prev.predict(x_embed, z[d-1])
                     err_in = F.mse_loss(z_d.to(pred_d.device), pred_d)
-                    
                     pred_next = block_next.predict(x_embed, z_d)
                     err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next)
                     
                     energy = err_in + err_out.to(err_in.device)
-                    # Use autograd.grad to keep parameter gradients clean for the weight update
                     grads = torch.autograd.grad(energy, z_d, retain_graph=False, allow_unused=True)[0]
                     
                     with torch.no_grad():
                         shock = torch.randn_like(z_d) * noise_std if noise_std > 0 else 0
                         grad_val = grads if grads is not None else 0
-                        z_d = z_d - (grad_val + shock) * 0.1 
+                        z_d_new = z_d - (grad_val + shock) * 0.1 
+                        
+                        # Track convergence
+                        delta = torch.abs(z_d_new - z_old).mean().item()
+                        max_delta = max(max_delta, delta)
                     
-                    new_z.append(z_d.detach())
+                    new_z.append(z_d_new.detach())
                 new_z.append(z[self.depth])
                 z = new_z
             else:
                 # Sequential Sweep (Biologically Plausible)
                 for d in range(1, self.depth):
                     block_prev, block_next = self.blocks[d-1], self.blocks[d]
-                    z_d = z[d].clone().detach().requires_grad_(True)
+                    z_old = z[d]
+                    z_d = z_old.clone().detach().requires_grad_(True)
                     pred_d = block_prev.predict(x_embed, z[d-1])
                     err_in = F.mse_loss(z_d.to(pred_d.device), pred_d)
                     pred_next = block_next.predict(x_embed, z_d)
@@ -144,14 +152,23 @@ class HSPCModel(GigaModel):
                     with torch.no_grad():
                         shock = torch.randn_like(z_d) * noise_std if noise_std > 0 else 0
                         grad_val = grads if grads is not None else 0
-                        z[d] = (z_d - (grad_val + shock) * 0.1).detach()
-        return z
+                        z_new_val = (z_d - (grad_val + shock) * 0.1).detach()
+                        delta = torch.abs(z_new_val - z_old).mean().item()
+                        max_delta = max(max_delta, delta)
+                        z[d] = z_new_val
+            
+            # Early Stopping Check
+            if threshold > 0 and max_delta < threshold:
+                break
+                
+        return z, actual_iters
 
     def train_step(self, x, y, **kwargs):
         config = kwargs.get('config', {})
         iters = config.get('hspc_iters', 10)
         noise = config.get('hspc_noise', 0.01)
         relaxation = config.get('hspc_relaxation', 'parallel')
+        threshold = config.get('hspc_convergence_threshold', 0.0) 
         opt_type = config.get('hspc_optimizer', 'adam')
         lr = config.get('hspc_lr', 1e-4)
 
@@ -168,8 +185,10 @@ class HSPCModel(GigaModel):
         x_embed = self.embed(x).detach() / math.sqrt(self.d_model)
         y_embed = self.embed(y).detach() / math.sqrt(self.d_model)
 
-        # 1. Find equilibrium states
-        z_refined = self.inference_relaxation(x_embed, y_embed, iters, noise, relaxation)
+        # 1. Find equilibrium states (with dynamic early stopping)
+        z_refined, actual_iters = self.inference_relaxation(
+            x_embed, y_embed, iters, noise, relaxation, threshold=threshold
+        )
 
         # Defensive sync to prevent stream mismatch warnings on Dual-T4
         if torch.cuda.is_available():
@@ -206,7 +225,12 @@ class HSPCModel(GigaModel):
         self.optimizer.step()
         
         final_loss = total_loss / (self.depth + 1)
-        return final_loss
+        
+        # Return metrics dict for advanced logging
+        return {
+            'loss': final_loss,
+            'hspc_actual_iters': actual_iters
+        }
 
     @torch.no_grad()
     def generate(self, prompt_tokens, max_new_tokens=50, temperature=1.0):
