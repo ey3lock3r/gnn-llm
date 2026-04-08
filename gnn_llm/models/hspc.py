@@ -1,0 +1,239 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+import os
+from .base import GigaModel
+
+class EntropyBalancedAttention(nn.Module):
+    def __init__(self, tau=0.02):
+        super().__init__()
+        self.tau = tau
+    def forward(self, h_i, h_j):
+        # Hyper-Stable v11.3: Native FP16 with score clamp avoids saturation
+        scores = torch.matmul(h_i, h_j.t()) / self.tau
+        scores = torch.clamp(scores, min=-10.0, max=10.0)
+        return torch.softmax(scores, dim=0)
+
+class HSPCBlock(nn.Module):
+    def __init__(self, d_model, device="cpu", use_fp16=True):
+        super().__init__()
+        self.d_model = d_model
+        self.device = device
+        self.use_fp16 = use_fp16
+        
+        # Predictive weight W: Predicts the next state from current + input
+        self.W = nn.Linear(d_model * 2, d_model, bias=False, device=device)
+        nn.init.trunc_normal_(self.W.weight, std=0.01)
+        self.norm = nn.LayerNorm(d_model, device=device, eps=1e-4)
+        self.eba = EntropyBalancedAttention(tau=0.02)
+        
+        if use_fp16:
+            self.W.half()
+            self.norm.half()
+
+    def predict(self, x, z_prev):
+        """Generates prediction for the next state z_l."""
+        if self.use_fp16:
+            x = x.half()
+            z_prev = z_prev.half()
+            
+        combined = torch.cat([x, z_prev], dim=-1)
+        h = self.W(combined)
+        h_norm = self.norm(h)
+        
+        # Attention gating for stability
+        att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
+        gated_att = torch.diagonal(att).view(-1, 1, 1)
+        
+        # Residual step: prediction of the delta
+        return z_prev + h * gated_att * 0.1
+
+class HSPCModel(GigaModel):
+    def __init__(self, vocab_size, d_model, depth, device="cpu", use_fp16=True):
+        super().__init__(vocab_size, d_model, device)
+        self.depth = depth
+        self.use_fp16 = use_fp16
+        
+        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            self.device0 = "cuda:0"
+            self.device1 = "cuda:1"
+        else:
+            self.device0 = device
+            self.device1 = device
+            
+        self.embed = nn.Embedding(vocab_size, d_model, device=self.device0)
+        nn.init.trunc_normal_(self.embed.weight, std=0.01)
+        if use_fp16:
+            self.embed.half()
+
+        self.blocks = nn.ModuleList()
+        for d in range(depth):
+            block_device = self.device0 if d < depth // 2 else self.device1
+            self.blocks.append(HSPCBlock(d_model, device=block_device, use_fp16=use_fp16))
+            
+        self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device1)
+        self.head.weight = self.embed.weight
+        
+        # Default Optimizer (Toggleable via CONFIG in train_step)
+        self.optimizer = None 
+
+    def init_optimizer(self, opt_type='adam', lr=1e-4):
+        if opt_type == 'adam':
+            self.optimizer = torch.optim.Adam(self.parameters(), lr=lr, eps=1e-4)
+        else:
+            self.optimizer = torch.optim.SGD(self.parameters(), lr=lr, momentum=0.9)
+
+    def inference_relaxation(self, x_embed, y_target_embed, iters=10, noise_std=0.01, relaxation='parallel'):
+        """
+        Iterative state relaxation (Pure HS-PC).
+        Adjusts internal states z_l to minimize local prediction errors.
+        """
+        batch_size, seq_len, _ = x_embed.shape
+        
+        # 1. Sequential Forward Pass to initialize states
+        z = [x_embed.to(self.blocks[0].device)]
+        for d in range(self.depth):
+            block = self.blocks[d]
+            target_device = block.device
+            z_in = z[-1].to(target_device)
+            x_d = x_embed.to(target_device)
+            z.append(block.predict(x_d, z_in).detach())
+        
+        # Final target state is the ground truth embedding
+        z[self.depth] = y_target_embed.to(self.device1)
+        
+        # 2. Relaxation Iterations
+        for _ in range(iters):
+            if relaxation == 'parallel':
+                # Update all states simultaneously
+                new_z = [z[0]] # Input stays fixed
+                for d in range(1, self.depth):
+                    block_prev = self.blocks[d-1]
+                    block_next = self.blocks[d]
+                    
+                    # z[d] should be predicted by z[d-1]
+                    # and should predict z[d+1]
+                    z_d = z[d].clone().requires_grad_(True)
+                    
+                    # Prediction from previous layer
+                    pred_d = block_prev.predict(x_embed.to(block_prev.device), z[d-1])
+                    err_in = F.mse_loss(z_d, pred_d.to(z_d.device))
+                    
+                    # Prediction for next layer
+                    pred_next = block_next.predict(x_embed.to(block_next.device), z_d)
+                    err_out = F.mse_loss(z[d+1].to(z_d.device), pred_next.to(z_d.device))
+                    
+                    # Total local energy
+                    energy = err_in + err_out
+                    energy.backward()
+                    
+                    # Update state with 'Stochastic Shock'
+                    with torch.no_grad():
+                        shock = torch.randn_like(z_d) * noise_std
+                        z_d -= (z_d.grad + shock) * 0.1 # State learning rate
+                        z_d.grad.zero_()
+                    
+                    new_z.append(z_d.detach())
+                new_z.append(z[self.depth]) # Target stays fixed
+                z = new_z
+            else:
+                # Sequential Sweep (Bottom-Up followed by Top-Down)
+                # This helps propagate the prediction errors more naturally
+                for d in range(1, self.depth):
+                    block_prev = self.blocks[d-1]
+                    block_next = self.blocks[d] if d < self.depth - 1 else None
+                    
+                    z_d = z[d].clone().requires_grad_(True)
+                    pred_d = block_prev.predict(x_embed.to(block_prev.device), z[d-1])
+                    err_in = F.mse_loss(z_d, pred_d.to(z_d.device))
+                    
+                    energy = err_in
+                    if block_next:
+                        pred_next = block_next.predict(x_embed.to(block_next.device), z_d)
+                        err_out = F.mse_loss(z[d+1].to(z_d.device), pred_next.to(z_d.device))
+                        energy += err_out
+                    
+                    energy.backward()
+                    with torch.no_grad():
+                        shock = torch.randn_like(z_d) * noise_std
+                        z_d -= (z_d.grad + shock) * 0.1
+                        z[d] = z_d.detach()
+                
+                # Top-Down refinement (Reverse Sweep)
+                for d in range(self.depth - 1, 0, -1):
+                    block_prev = self.blocks[d-1]
+                    block_next = self.blocks[d]
+                    
+                    z_d = z[d].clone().requires_grad_(True)
+                    pred_d = block_prev.predict(x_embed.to(block_prev.device), z[d-1])
+                    err_in = F.mse_loss(z_d, pred_d.to(z_d.device))
+                    
+                    pred_next = block_next.predict(x_embed.to(block_next.device), z_d)
+                    err_out = F.mse_loss(z[d+1].to(z_d.device), pred_next.to(z_d.device))
+                    
+                    energy = err_in + err_out
+                    energy.backward()
+                    with torch.no_grad():
+                        shock = torch.randn_like(z_d) * noise_std
+                        z_d -= (z_d.grad + shock) * 0.1
+                        z[d] = z_d.detach()
+        
+        return z
+
+    def train_step(self, x, y, **kwargs):
+        config = kwargs.get('config', {})
+        iters = config.get('hspc_iters', 10)
+        noise = config.get('hspc_noise', 0.01)
+        relaxation = config.get('hspc_relaxation', 'parallel')
+        opt_type = config.get('hspc_optimizer', 'adam')
+        lr = config.get('hspc_lr', 1e-4)
+
+        if self.optimizer is None:
+            self.init_optimizer(opt_type, lr)
+
+        # Scale inputs (v11.2 best practice)
+        x_embed = self.embed(x).detach() / math.sqrt(self.d_model)
+        y_embed = self.embed(y).detach() / math.sqrt(self.d_model)
+
+        # 1. Find equilibrium states
+        z_refined = self.inference_relaxation(x_embed, y_embed, iters, noise, relaxation)
+
+        # 2. Local weight updates
+        self.optimizer.zero_grad()
+        total_loss = 0
+        
+        for d in range(self.depth):
+            block = self.blocks[d]
+            target_device = block.device
+            
+            x_d = x_embed.to(target_device)
+            z_in = z_refined[d].to(target_device)
+            z_target = z_refined[d+1].to(target_device)
+            
+            z_pred = block.predict(x_d, z_in)
+            loss = F.mse_loss(z_pred, z_target)
+            loss.backward()
+            total_loss += loss.item()
+
+        torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
+        self.optimizer.step()
+        
+        return total_loss / self.depth
+
+    def save_checkpoint(self, path, step):
+        checkpoint = {
+            'step': step,
+            'state_dict': self.state_dict(),
+            'd_model': self.d_model,
+            'depth': self.depth,
+            'use_fp16': self.use_fp16
+        }
+        torch.save(checkpoint, path)
+
+    def load_checkpoint(self, path):
+        if not os.path.exists(path):
+            return 0
+        checkpoint = torch.load(path, map_location='cpu')
+        self.load_state_dict(checkpoint['state_dict'])
+        return checkpoint['step']

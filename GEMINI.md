@@ -36,13 +36,11 @@ gnn-llm/
 └── GEMINI.md
 ```
 
----
-
 ### 🧬 Core Architecture
-- **Algorithm:** **APTP** (Asynchronous PEPITA-TargetProp) AND **NoProp** (Block-wise Denoising, 2025).
-- **Scaling Phase:** **GigaGraph v11.0** (3.2B parameters, NoProp).
+- **Algorithm:** **APTP** (Activity Prop), **NoProp** (Denoising), and **HS-PC** (Hybrid Stochastic Predictive Coding, 2026).
+- **Scaling Phase:** **GigaGraph v11.5** (3.2B parameters, HS-PC).
   - `d_model=3072`, `depth=32`, `max_seq_len=4096`
-  - **Denoising Path:** Asynchronous local learning (NoProp) with Cosine Schedule.
+  - **Learning Rule:** Iterative state relaxation + Stochastic shocks.
   - **Distributed Strategy:** Layer-Sharding (16 blocks on `cuda:0`, 16 blocks on `cuda:1`) + FP16 Mixed Precision.
 
 ---
@@ -113,19 +111,13 @@ uv run pytest tests/unit/test_models.py::test_aptp_train_step -v
 
 ---
 
-### 📉 Convergence Metrics
-- **Llama-3 Baseline (128k Vocab):** Initial Loss ~11.76
-- **APTP v8.12 Status:** Stable at 11.9 (Breakout in progress)
-- **NoProp Target:** MSE denoising loss → should approach < 1.0
-
----
-
 ### 🔭 Roadmap
 | Version | Algorithm | Parameters | Status |
 |---------|-----------|-----------|--------|
 | v8.12 | APTP-GNN | 3.2B | Archived (Plateau 11.9) |
 | v10.1 | NoProp-Proto| 100M | Validated (Breakout) |
-| v11.0 | NoProp-Scale| 3.2B | ✅ Active |
+| v11.0 | NoProp-Scale| 3.2B | Archived (MSE Baseline) |
+| v11.5 | HS-PC-Scale| 3.2B | ✅ Active |
 | v12.0 | GigaScale | 8B | Planned |
 
 ---

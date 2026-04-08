@@ -1,11 +1,13 @@
 """GigaGraph GNN-LLM Package (v10.0)"""
 from .models.aptp import APTPModel
 from .models.noprop import NoPropModel
+from .models.hspc import HSPCModel
 from .data.pipeline import GigaDataPipeline
 
 MODEL_REGISTRY = {
     "aptp": APTPModel,
     "noprop": NoPropModel,
+    "hspc": HSPCModel,
 }
 
 def build_model(algorithm, **kwargs):
