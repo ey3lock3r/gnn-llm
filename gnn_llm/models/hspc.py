@@ -78,9 +78,8 @@ class HSPCModel(GigaModel):
         self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device0)
         self.head.weight = self.embed.weight
         
-        # Default Optimizer & Scaler for FP16 Stability
+        # Default Optimizer (Toggleable via CONFIG in train_step)
         self.optimizer = None 
-        self.scaler = torch.amp.GradScaler('cuda', enabled=use_fp16)
 
     def init_optimizer(self, opt_type='adam', lr=1e-4):
         if opt_type == 'adam':
@@ -220,8 +219,7 @@ class HSPCModel(GigaModel):
                 target_device = block.W.weight.device
                 z_pred = block.predict(x_embed, z_refined[d])
                 loss = F.mse_loss(z_pred, z_refined[d+1].to(target_device))
-                # Local scaling for predictive updates
-                self.scaler.scale(loss).backward()
+                loss.backward()
                 total_loss += loss.item()
 
             # LM Head supervised loss (Essential for non-zero signal)
@@ -229,7 +227,7 @@ class HSPCModel(GigaModel):
             logits = self.head(z_final)
             target_tokens = y.to(logits.device)
             loss_lm = F.cross_entropy(logits.view(-1, self.vocab_size), target_tokens.view(-1))
-            self.scaler.scale(loss_lm).backward()
+            loss_lm.backward()
             total_loss += loss_lm.item()
 
         # SUPER-AGGRESSIVE MEMORY CLEANUP
@@ -239,8 +237,7 @@ class HSPCModel(GigaModel):
             torch.cuda.empty_cache()
 
         torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        self.optimizer.step()
         
         final_loss = total_loss / (self.depth + 1)
         
