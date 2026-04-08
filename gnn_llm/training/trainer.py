@@ -19,12 +19,14 @@ def run_training(model, loader, config):
     lr = config.get('lr', 1e-3)
     warmup_steps = config.get('warmup_steps', 500)
     max_steps = config.get('max_steps', float('inf'))
+    # max_steps = additional steps to train this session, not an absolute global cap
+    stop_at_step = resume_step + max_steps
 
     pbar = tqdm(loader)
     for i, batch in enumerate(pbar):
         global_step = resume_step + i
-        if global_step >= max_steps:
-            print(f"✅ Reached max_steps ({max_steps}). Stopping training.")
+        if global_step >= stop_at_step:
+            print(f"✅ Reached max_steps ({max_steps}) from resume point {resume_step}. Stopping.")
             break
             
         curr_lr = lr * min(1.0, (global_step + 1) / warmup_steps)
