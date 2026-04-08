@@ -11,9 +11,10 @@ class EntropyBalancedAttention(nn.Module):
         self.tau = tau
     def forward(self, h_i, h_j):
         # Hyper-Stable v11.3: Native FP16 with score clamp avoids saturation
-        scores = torch.matmul(h_i, h_j.t()) / self.tau
-        scores = torch.clamp(scores, min=-10.0, max=10.0)
-        return torch.softmax(scores, dim=0)
+        scores = torch.matmul(h_i, h_j.t()) / (self.tau + 1e-6)
+        scores = torch.clamp(scores, min=-8.0, max=8.0)
+        # Ensure at least one element for batch_size=1
+        return torch.softmax(scores, dim=-1)
 
 class HSPCBlock(nn.Module):
     def __init__(self, d_model, device="cpu", use_fp16=True):
@@ -74,11 +75,12 @@ class HSPCModel(GigaModel):
             block_device = self.device0 if d < depth // 2 else self.device1
             self.blocks.append(HSPCBlock(d_model, device=block_device, use_fp16=use_fp16))
             
-        self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device1)
+        self.head = nn.Linear(d_model, vocab_size, bias=False, device=self.device0)
         self.head.weight = self.embed.weight
         
-        # Default Optimizer (Toggleable via CONFIG in train_step)
+        # Default Optimizer & Scaler for FP16 Stability
         self.optimizer = None 
+        self.scaler = torch.amp.GradScaler('cuda', enabled=use_fp16)
 
     def init_optimizer(self, opt_type='adam', lr=1e-4):
         if opt_type == 'adam':
@@ -129,10 +131,11 @@ class HSPCModel(GigaModel):
                     
                     with torch.no_grad():
                         grad_val = grads if grads is not None else torch.zeros_like(z_d)
-                        shock = torch.randn_like(z_d) * noise_std if noise_std > 0 else 0
+                        # Scale shocks relative to state magnitude for deep stability
+                        z_std = z_d.std().item() + 1e-6
+                        shock = torch.randn_like(z_d) * (noise_std * z_std) if noise_std > 0 else 0
                         
                         # NOISE FLOOR FIX: Delta is measured based on the INTENTIONAL gradient move
-                        # This ignores the random jitter which would otherwise prevent reaching the threshold.
                         delta = torch.abs(grad_val * state_lr).mean().item()
                         max_delta = max(max_delta, delta)
                         
@@ -156,7 +159,8 @@ class HSPCModel(GigaModel):
                     grads = torch.autograd.grad(energy, z_d, retain_graph=False, allow_unused=True)[0]
                     with torch.no_grad():
                         grad_val = grads if grads is not None else torch.zeros_like(z_d)
-                        shock = torch.randn_like(z_d) * noise_std if noise_std > 0 else 0
+                        z_std = z_d.std().item() + 1e-6
+                        shock = torch.randn_like(z_d) * (noise_std * z_std) if noise_std > 0 else 0
                         
                         delta = torch.abs(grad_val * state_lr).mean().item()
                         max_delta = max(max_delta, delta)
@@ -194,36 +198,39 @@ class HSPCModel(GigaModel):
         x_embed = self.embed(x).detach() / math.sqrt(self.d_model)
         y_embed = self.embed(y).detach() / math.sqrt(self.d_model)
 
-        # 1. Find equilibrium states (with dynamic early stopping)
-        z_refined, actual_iters, avg_delta = self.inference_relaxation(
-            x_embed, y_embed, iters, noise, relaxation, 
-            threshold=threshold, state_lr=state_lr
-        )
+        # Mixed Precision Autocast for HS-PC stability
+        with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
+            # 1. Find equilibrium states (with dynamic early stopping)
+            z_refined, actual_iters, avg_delta = self.inference_relaxation(
+                x_embed, y_embed, iters, noise, relaxation, 
+                threshold=threshold, state_lr=state_lr
+            )
 
-        # Defensive sync to prevent stream mismatch warnings on Dual-T4
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            # Defensive sync to prevent stream mismatch warnings on Dual-T4
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
-        # 2. Local weight updates
-        self.optimizer.zero_grad()
-        total_loss = 0
-        
-        # Block-wise predictive loss
-        for d in range(self.depth):
-            block = self.blocks[d]
-            target_device = block.W.weight.device
-            z_pred = block.predict(x_embed, z_refined[d])
-            loss = F.mse_loss(z_pred, z_refined[d+1].to(target_device))
-            loss.backward()
-            total_loss += loss.item()
+            # 2. Local weight updates
+            self.optimizer.zero_grad()
+            total_loss = 0
+            
+            # Block-wise predictive loss
+            for d in range(self.depth):
+                block = self.blocks[d]
+                target_device = block.W.weight.device
+                z_pred = block.predict(x_embed, z_refined[d])
+                loss = F.mse_loss(z_pred, z_refined[d+1].to(target_device))
+                # Local scaling for predictive updates
+                self.scaler.scale(loss).backward()
+                total_loss += loss.item()
 
-        # LM Head supervised loss (Essential for non-zero signal)
-        z_final = z_refined[self.depth].to(self.head.weight.device)
-        logits = self.head(z_final)
-        target_tokens = y.to(logits.device)
-        loss_lm = F.cross_entropy(logits.view(-1, self.vocab_size), target_tokens.view(-1))
-        loss_lm.backward()
-        total_loss += loss_lm.item()
+            # LM Head supervised loss (Essential for non-zero signal)
+            z_final = z_refined[self.depth].to(self.head.weight.device)
+            logits = self.head(z_final)
+            target_tokens = y.to(logits.device)
+            loss_lm = F.cross_entropy(logits.view(-1, self.vocab_size), target_tokens.view(-1))
+            self.scaler.scale(loss_lm).backward()
+            total_loss += loss_lm.item()
 
         # SUPER-AGGRESSIVE MEMORY CLEANUP
         # We must clear activations BEFORE optimizer.step() allocations for 3.2B+ models
@@ -232,7 +239,8 @@ class HSPCModel(GigaModel):
             torch.cuda.empty_cache()
 
         torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
         final_loss = total_loss / (self.depth + 1)
         
