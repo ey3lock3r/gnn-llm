@@ -194,13 +194,16 @@ class HSPCModel(GigaModel):
         loss_lm.backward()
         total_loss += loss_lm.item()
 
+        # SUPER-AGGRESSIVE MEMORY CLEANUP
+        # We must clear activations BEFORE optimizer.step() allocations for 3.2B+ models
+        del z_refined, z_final, logits, target_tokens
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
         self.optimizer.step()
         
         final_loss = total_loss / (self.depth + 1)
-        
-        # Explicit cleanup to release autograd graph
-        del z_refined
         return final_loss
 
     @torch.no_grad()
