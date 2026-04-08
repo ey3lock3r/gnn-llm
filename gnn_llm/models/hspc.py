@@ -189,8 +189,7 @@ class HSPCModel(GigaModel):
         # LM Head supervised loss (Essential for non-zero signal)
         z_final = z_refined[self.depth].to(self.head.weight.device)
         logits = self.head(z_final)
-        # y is the shifted token target
-        target_tokens = y.to(self.device1)
+        target_tokens = y.to(logits.device)
         loss_lm = F.cross_entropy(logits.view(-1, self.vocab_size), target_tokens.view(-1))
         loss_lm.backward()
         total_loss += loss_lm.item()
