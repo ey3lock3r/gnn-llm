@@ -169,24 +169,40 @@ class HSPCModel(GigaModel):
         # 1. Find equilibrium states
         z_refined = self.inference_relaxation(x_embed, y_embed, iters, noise, relaxation)
 
+        # Defensive sync to prevent stream mismatch warnings on Dual-T4
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         # 2. Local weight updates
         self.optimizer.zero_grad()
         total_loss = 0
         
+        # Block-wise predictive loss
         for d in range(self.depth):
             block = self.blocks[d]
             target_device = block.W.weight.device
-            
-            # Predict labels based on refined states
             z_pred = block.predict(x_embed, z_refined[d])
             loss = F.mse_loss(z_pred, z_refined[d+1].to(target_device))
             loss.backward()
             total_loss += loss.item()
 
+        # LM Head supervised loss (Essential for non-zero signal)
+        z_final = z_refined[self.depth].to(self.device1)
+        logits = self.head(z_final)
+        # y is the shifted token target
+        target_tokens = y.to(self.device1)
+        loss_lm = F.cross_entropy(logits.view(-1, self.vocab_size), target_tokens.view(-1))
+        loss_lm.backward()
+        total_loss += loss_lm.item()
+
         torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
         self.optimizer.step()
         
-        return total_loss / self.depth
+        final_loss = total_loss / (self.depth + 1)
+        
+        # Explicit cleanup to release autograd graph
+        del z_refined
+        return final_loss
 
     @torch.no_grad()
     def generate(self, prompt_tokens, max_new_tokens=50, temperature=1.0):
