@@ -29,7 +29,9 @@ def run_training(model, loader, config):
             print(f"✅ Reached max_steps ({max_steps}) from resume point {resume_step}. Stopping.")
             break
             
-        curr_lr = lr * min(1.0, (global_step + 1) / warmup_steps)
+        # Warmup is per-session (local step i), not global_step.
+        # This ensures LR ramps correctly even when resuming from late checkpoints.
+        curr_lr = lr * min(1.0, (i + 1) / warmup_steps)
 
         x = batch.to(next(model.parameters()).device if len(list(model.parameters())) > 0 else 'cpu')
         y = torch.roll(x, -1, dims=1)
