@@ -157,6 +157,8 @@ class HSPCModel(GigaModel):
 
         if self.optimizer is None:
             self.init_optimizer(opt_type, lr)
+            # Suppress intentional stream mismatch warnings in sharded Dual-T4 setups
+            torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
         else:
             # Sync learning rate for warmup compatibility
             for param_group in self.optimizer.param_groups:
@@ -196,7 +198,7 @@ class HSPCModel(GigaModel):
 
         # SUPER-AGGRESSIVE MEMORY CLEANUP
         # We must clear activations BEFORE optimizer.step() allocations for 3.2B+ models
-        del z_refined, z_final, logits, target_tokens
+        del z_refined, z_final, logits, target_tokens, loss, loss_lm
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
