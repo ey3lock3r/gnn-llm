@@ -61,6 +61,8 @@ def run_training(model, loader, config):
             pbar_metrics = {'step': global_step, 'loss': f'{loss_val:.4f}'}
             if 'hspc_actual_iters' in extra_metrics:
                 pbar_metrics['iters'] = extra_metrics['hspc_actual_iters']
+            if 'hspc_avg_delta' in extra_metrics:
+                pbar_metrics['delta'] = f"{extra_metrics['hspc_avg_delta']:.2e}"
             pbar.set_postfix(pbar_metrics)
 
         if global_step > 0 and global_step % SAVE_INTERVAL == 0:

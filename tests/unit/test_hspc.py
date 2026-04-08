@@ -29,6 +29,7 @@ def test_hspc_train_step_parallel():
     assert isinstance(result, dict)
     assert 'loss' in result
     assert 'hspc_actual_iters' in result
+    assert 'hspc_avg_delta' in result
     assert not torch.isnan(torch.tensor(result['loss']))
 
 def test_hspc_early_stopping():
@@ -36,15 +37,17 @@ def test_hspc_early_stopping():
     x = make_batch()
     y = torch.roll(x, -1, dims=1)
     
-    # Large threshold should break immediately (iters=1)
+    # Noise Floor Fix Test:
+    # Even with noise_std=0.01, if threshold=0.1 (very large), 
+    # it must break at iters=1 because our new logic ignores random jitter.
     config = {
         'hspc_iters': 10,
         'hspc_relaxation': 'parallel',
-        'hspc_optimizer': 'adam',
-        'hspc_convergence_threshold': 1.0 
+        'hspc_noise': 0.01,
+        'hspc_convergence_threshold': 0.1 
     }
     result = model.train_step(x, y, config=config)
-    assert result['hspc_actual_iters'] < 10
+    assert result['hspc_actual_iters'] == 1
 
 def test_hspc_train_step_sequential():
     model = build_model("hspc", vocab_size=VOCAB, d_model=D_MODEL, depth=DEPTH, device="cpu", use_fp16=False)
