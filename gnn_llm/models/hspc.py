@@ -127,15 +127,22 @@ class HSPCModel(GigaModel):
                     
                     # Prediction dynamics
                     pred_d = block_prev.predict(x_embed, z[d-1])
-                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d, reduction='sum')
+                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d, reduction='mean')
                     pred_next = block_next.predict(x_embed, z_d)
-                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next, reduction='sum')
+                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next, reduction='mean')
                     
                     energy = err_in + err_out.to(err_in.device)
                     grads = torch.autograd.grad(energy, z_d, retain_graph=False, allow_unused=True)[0]
                     
                     with torch.no_grad():
                         grad_val = grads if grads is not None else torch.zeros_like(z_d)
+                        
+                        # Mathematically Reconstruct True Local Derivative (preventing FP16 inf sum overflow)
+                        grad_val = grad_val * z_d.numel()
+                        
+                        # CRITICAL: Attention Accumulation Clipping prevents cross-sequence NaN explosions
+                        grad_val = torch.clamp(grad_val, min=-0.1, max=0.1)
+                        
                         # Scale shocks relative to state magnitude for deep stability
                         z_std = z_d.std().item() + 1e-6
                         shock = torch.randn_like(z_d) * (noise_std * z_std) if noise_std > 0 else 0
@@ -146,6 +153,7 @@ class HSPCModel(GigaModel):
                         
                         # Apply update
                         z_d_new = z_d - (grad_val + shock) * state_lr
+
                     
                     new_z.append(z_d_new.detach())
                 new_z.append(z[self.depth])
@@ -157,13 +165,20 @@ class HSPCModel(GigaModel):
                     z_old = z[d]
                     z_d = z_old.clone().detach().requires_grad_(True)
                     pred_d = block_prev.predict(x_embed, z[d-1])
-                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d, reduction='sum')
+                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d, reduction='mean')
                     pred_next = block_next.predict(x_embed, z_d)
-                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next, reduction='sum')
+                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next, reduction='mean')
                     energy = err_in + err_out.to(err_in.device)
                     grads = torch.autograd.grad(energy, z_d, retain_graph=False, allow_unused=True)[0]
                     with torch.no_grad():
                         grad_val = grads if grads is not None else torch.zeros_like(z_d)
+                        
+                        # Mathematically Reconstruct True Local Derivative (preventing FP16 inf sum overflow)
+                        grad_val = grad_val * z_d.numel()
+                        
+                        # CRITICAL: Attention Accumulation Clipping prevents cross-sequence NaN explosions
+                        grad_val = torch.clamp(grad_val, min=-0.1, max=0.1)
+                        
                         z_std = z_d.std().item() + 1e-6
                         shock = torch.randn_like(z_d) * (noise_std * z_std) if noise_std > 0 else 0
                         
