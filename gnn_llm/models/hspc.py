@@ -214,36 +214,39 @@ class HSPCModel(GigaModel):
             total_loss = 0
             
             # Block-wise predictive loss
+            avg_mse = 0
             for d in range(self.depth):
                 block = self.blocks[d]
                 target_device = block.W.weight.device
                 z_pred = block.predict(x_embed, z_refined[d])
                 loss = F.mse_loss(z_pred, z_refined[d+1].to(target_device))
                 loss.backward()
-                total_loss += loss.item()
+                avg_mse += loss.item()
+            
+            avg_mse = avg_mse / self.depth
 
-            # LM Head supervised loss (Essential for non-zero signal)
-            z_final = z_refined[self.depth].to(self.head.weight.device)
-            logits = self.head(z_final)
+            # LM Head supervised loss on ACTUAL prediction (to measure real token learning)
+            z_final_pred = self.blocks[self.depth-1].predict(x_embed, z_refined[self.depth-1])
+            z_final_pred = z_final_pred.to(self.head.weight.device)
+            logits = self.head(z_final_pred)
             target_tokens = y.to(logits.device)
             loss_lm = F.cross_entropy(logits.view(-1, self.vocab_size), target_tokens.view(-1))
             loss_lm.backward()
-            total_loss += loss_lm.item()
+            loss_lm_val = loss_lm.item()
 
         # SUPER-AGGRESSIVE MEMORY CLEANUP
         # We must clear activations BEFORE optimizer.step() allocations for 3.2B+ models
-        del z_refined, z_final, logits, target_tokens, loss, loss_lm
+        del z_refined, z_final_pred, logits, target_tokens, loss, loss_lm
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         torch.nn.utils.clip_grad_value_(self.parameters(), clip_value=1.0)
         self.optimizer.step()
         
-        final_loss = total_loss / (self.depth + 1)
-        
         # Return metrics dict for advanced logging
         return {
-            'loss': final_loss,
+            'loss': loss_lm_val,         # Primary LM Loss (Cross Entropy)
+            'hspc_mse_loss': avg_mse,    # Predictive coding stability
             'hspc_actual_iters': actual_iters,
             'hspc_avg_delta': avg_delta
         }
