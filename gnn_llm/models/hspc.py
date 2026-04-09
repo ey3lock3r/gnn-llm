@@ -13,13 +13,17 @@ class EntropyBalancedAttention(nn.Module):
         # x is [batch, seq, d_model]
         batch_size, seq_len, d_model = x.shape
         # Native FP16 with score clamp avoids saturation
-        scores = torch.bmm(x, x.transpose(1, 2)) / (self.tau + 1e-6)
+        # CRITICAL: Since x is LayerNormed (var=1), diagonal dot product is exactly d_model.
+        # We MUST normalize by d_model to prevent perpetual FP16 inf (>65504) overflow!
+        scores = torch.bmm(x, x.transpose(1, 2)) / (d_model * self.tau + 1e-6)
         
-        # Causal Masking: Prevent token t from looking at t+1, t+2...
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-        scores = scores.masked_fill(mask, -8.0) # -8.0 is safe min for our FP16 clamp
-        
+        # Clamp upper bounds to avoid softmax overflow, BEFORE masking
         scores = torch.clamp(scores, min=-8.0, max=8.0)
+        
+        # Strictly Causal Masking (inf guarantees 0 probability regardless of clamping minimum)
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+        scores = scores.masked_fill(mask, float('-inf'))
+
         return torch.softmax(scores, dim=-1)
 
 class HSPCBlock(nn.Module):
