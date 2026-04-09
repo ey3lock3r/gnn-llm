@@ -9,11 +9,17 @@ class EntropyBalancedAttention(nn.Module):
     def __init__(self, tau=0.02):
         super().__init__()
         self.tau = tau
-    def forward(self, h_i, h_j):
-        # Hyper-Stable v11.3: Native FP16 with score clamp avoids saturation
-        scores = torch.matmul(h_i, h_j.t()) / (self.tau + 1e-6)
+    def forward(self, x):
+        # x is [batch, seq, d_model]
+        batch_size, seq_len, d_model = x.shape
+        # Native FP16 with score clamp avoids saturation
+        scores = torch.bmm(x, x.transpose(1, 2)) / (self.tau + 1e-6)
+        
+        # Causal Masking: Prevent token t from looking at t+1, t+2...
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+        scores = scores.masked_fill(mask, -8.0) # -8.0 is safe min for our FP16 clamp
+        
         scores = torch.clamp(scores, min=-8.0, max=8.0)
-        # Ensure at least one element for batch_size=1
         return torch.softmax(scores, dim=-1)
 
 class HSPCBlock(nn.Module):
@@ -45,12 +51,12 @@ class HSPCBlock(nn.Module):
         h = self.W(combined)
         h_norm = self.norm(h)
         
-        # Attention gating for stability
-        att = self.eba(h_norm.mean(dim=1), h_norm.mean(dim=1))
-        gated_att = torch.diagonal(att).view(-1, 1, 1)
+        # Sequence-Mixing Attention: O(N^2)
+        att = self.eba(h_norm) # [batch, seq, seq]
+        h_mixed = torch.bmm(att, h_norm) # [batch, seq, d_model]
         
         # Residual step: prediction of the delta
-        return z_prev + h * gated_att * 0.1
+        return z_prev + h_mixed * 0.1
 
 class HSPCModel(GigaModel):
     def __init__(self, vocab_size, d_model, depth, device="cpu", use_fp16=True):
