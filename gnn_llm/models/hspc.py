@@ -121,9 +121,9 @@ class HSPCModel(GigaModel):
                     
                     # Prediction dynamics
                     pred_d = block_prev.predict(x_embed, z[d-1])
-                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d)
+                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d, reduction='sum')
                     pred_next = block_next.predict(x_embed, z_d)
-                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next)
+                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next, reduction='sum')
                     
                     energy = err_in + err_out.to(err_in.device)
                     grads = torch.autograd.grad(energy, z_d, retain_graph=False, allow_unused=True)[0]
@@ -151,9 +151,9 @@ class HSPCModel(GigaModel):
                     z_old = z[d]
                     z_d = z_old.clone().detach().requires_grad_(True)
                     pred_d = block_prev.predict(x_embed, z[d-1])
-                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d)
+                    err_in = F.mse_loss(z_d.to(pred_d.device), pred_d, reduction='sum')
                     pred_next = block_next.predict(x_embed, z_d)
-                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next)
+                    err_out = F.mse_loss(z[d+1].to(pred_next.device), pred_next, reduction='sum')
                     energy = err_in + err_out.to(err_in.device)
                     grads = torch.autograd.grad(energy, z_d, retain_graph=False, allow_unused=True)[0]
                     with torch.no_grad():
